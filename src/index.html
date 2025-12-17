@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BurnISO to USB</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Confirm Dialog Modal -->
+  <div id="confirm-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content modal-warning">
+      <div class="modal-header warning">
+        <span class="modal-icon">⚠️</span>
+        <h2 id="confirm-title">Warnung</h2>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-message" class="confirm-message">Sind Sie sicher?</p>
+      </div>
+      <div class="modal-footer">
+        <button id="confirm-cancel-btn" class="btn secondary">Abbrechen</button>
+        <button id="confirm-ok-btn" class="btn danger">Ja, löschen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Password Dialog Modal -->
+  <div id="password-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-icon">🔐</span>
+        <h2>Administrator-Passwort</h2>
+      </div>
+      <div class="modal-body">
+        <p id="password-prompt">Zum Ausführen dieser Aktion werden Administrator-Rechte benötigt.</p>
+        <div class="password-input-wrapper">
+          <input type="password" id="password-input" placeholder="macOS-Passwort eingeben" autocomplete="off" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="password-cancel-btn" class="btn secondary">Abbrechen</button>
+        <button id="password-ok-btn" class="btn primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <!-- App Header -->
+    <header class="app-header">
+      <div class="header-icon">🔥</div>
+      <div class="header-text">
+        <h1>burnISOtoUSB</h1>
+        <p>ISO ↔ USB Images verwalten</p>
+      </div>
+    </header>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="burn">ISO → USB</button>
+      <button class="tab-btn" data-tab="backup">USB → ISO</button>
+    </div>
+
+    <!-- ISO to USB Tab -->
+    <div id="burn-tab" class="tab-content active">
+      <div class="section">
+        <h3>📀 ISO-Datei auswählen</h3>
+        <div class="file-input-row">
+          <input type="text" id="iso-path" placeholder="Keine Datei ausgewählt" readonly />
+          <button id="select-iso-btn" class="btn secondary">Durchsuchen</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>💾 USB-Stick auswählen</h3>
+        <div class="disk-row">
+          <select id="burn-disk-select">
+            <option value="">-- USB-Stick wählen --</option>
+          </select>
+          <button id="refresh-burn-disks" class="btn secondary icon-btn" title="Aktualisieren">🔄</button>
+        </div>
+        <div id="burn-disk-info" class="disk-info"></div>
+      </div>
+
+      <div class="section">
+        <h3>⚙️ Optionen</h3>
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="verify-after-burn" checked />
+            <span class="checkbox-text">
+              <strong>Nach dem Brennen verifizieren</strong>
+              <small>Vergleicht geschriebene Daten mit der ISO-Datei</small>
+            </span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="eject-after-burn" checked />
+            <span class="checkbox-text">
+              <strong>USB-Stick nach Abschluss auswerfen</strong>
+              <small>Wirft den Datenträger sicher aus</small>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>📊 Fortschritt</h3>
+        <div class="progress-container">
+          <div class="progress-bar" id="burn-progress">
+            <div class="progress-fill" id="burn-progress-fill"></div>
+          </div>
+          <span class="progress-text" id="burn-progress-text">0%</span>
+        </div>
+        <div id="burn-phase" class="phase-text"></div>
+      </div>
+
+      <div class="button-row">
+        <button id="burn-btn" class="btn primary large" disabled>🔥 ISO auf USB brennen</button>
+        <button id="cancel-burn-btn" class="btn danger" disabled>Abbrechen</button>
+      </div>
+
+      <div class="section">
+        <h3>📋 Protokoll</h3>
+        <div id="burn-log" class="log-output"></div>
+      </div>
+    </div>
+
+    <!-- USB to ISO Tab -->
+    <div id="backup-tab" class="tab-content">
+      <div class="section">
+        <h3>💾 USB-Stick auswählen</h3>
+        <div class="disk-row">
+          <select id="backup-disk-select">
+            <option value="">-- USB-Stick wählen --</option>
+          </select>
+          <button id="refresh-backup-disks" class="btn secondary icon-btn" title="Aktualisieren">🔄</button>
+        </div>
+        <div id="backup-disk-info" class="disk-info"></div>
+      </div>
+
+      <div class="section">
+        <h3>📁 Speicherort für Image</h3>
+        <div class="file-input-row">
+          <input type="text" id="backup-destination" placeholder="Ziel wählen" readonly />
+          <button id="select-destination-btn" class="btn secondary">Speichern unter</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>⚙️ Sicherungsmodus</h3>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="backup-mode" value="raw" checked />
+            <span class="radio-text">
+              <strong>Sektorgenau (Raw)</strong>
+              <small>Komplettes Image inkl. aller Sektoren - langsamer aber exakt</small>
+            </span>
+          </label>
+          <label class="radio-label" id="filesystem-mode-label">
+            <input type="radio" name="backup-mode" value="filesystem" disabled />
+            <span class="radio-text">
+              <strong>Dateibasiert (Schnell)</strong>
+              <small>Nur belegte Dateien - schneller und komprimiert</small>
+            </span>
+          </label>
+        </div>
+        <div id="filesystem-note" class="note hidden">
+          ✅ Dateisystem unterstützt: <span id="detected-fs"></span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>📊 Fortschritt</h3>
+        <div class="progress-container">
+          <div class="progress-bar" id="backup-progress">
+            <div class="progress-fill" id="backup-progress-fill"></div>
+          </div>
+          <span class="progress-text" id="backup-progress-text">0%</span>
+        </div>
+      </div>
+
+      <div class="button-row">
+        <button id="backup-btn" class="btn primary large" disabled>💿 USB sichern</button>
+        <button id="cancel-backup-btn" class="btn danger" disabled>Abbrechen</button>
+      </div>
+
+      <div class="section">
+        <h3>�� Protokoll</h3>
+        <div id="backup-log" class="log-output"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
