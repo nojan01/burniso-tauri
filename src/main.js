@@ -650,6 +650,36 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'lang_en':
         window.i18n.setLanguage('en');
         break;
+      case 'theme_dark':
+        window.i18n.setTheme('dark');
+        break;
+      case 'theme_light':
+        window.i18n.setTheme('light');
+        break;
+      case 'help':
+        // Open help in new Tauri window
+        (async () => {
+          try {
+            const { WebviewWindow } = window.__TAURI__.webviewWindow;
+            const helpWindow = new WebviewWindow('help', {
+              url: 'help.html',
+              title: window.i18n.currentLang === 'de' ? 'Hilfe - BurnISO to USB' : 'Help - BurnISO to USB',
+              width: 700,
+              height: 800,
+              center: true,
+              resizable: true
+            });
+            helpWindow.once('tauri://created', () => {
+              console.log('Help window created');
+            });
+            helpWindow.once('tauri://error', (e) => {
+              console.error('Error creating help window:', e);
+            });
+          } catch (err) {
+            console.error('Failed to open help:', err);
+          }
+        })();
+        break;
     }
   });
 

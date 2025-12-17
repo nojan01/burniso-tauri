@@ -620,15 +620,22 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
     let minimize = PredefinedMenuItem::minimize(app_handle, Some(minimize_label))?;
     let fullscreen = PredefinedMenuItem::fullscreen(app_handle, Some(fullscreen_label))?;
     
+    let theme_dark_label = if lang == "en" { "🌙 Dark Mode" } else { "🌙 Dunkles Design" };
+    let theme_light_label = if lang == "en" { "☀️ Light Mode" } else { "☀️ Helles Design" };
+    let theme_dark = MenuItem::with_id(app_handle, "theme_dark", theme_dark_label, true, Some("CmdOrCtrl+Shift+D"))?;
+    let theme_light = MenuItem::with_id(app_handle, "theme_light", theme_light_label, true, Some("CmdOrCtrl+Shift+L"))?;
+    
     let window_menu = Submenu::with_items(
         app_handle,
         window_menu_label,
         true,
-        &[&minimize, &fullscreen],
+        &[&minimize, &fullscreen, &PredefinedMenuItem::separator(app_handle)?, &theme_dark, &theme_light],
     )?;
     
     // Hilfe-Menü
+    let help_label = if lang == "en" { "Help" } else { "Hilfe" };
     let github = MenuItem::with_id(app_handle, "github", "GitHub Repository", true, None::<&str>)?;
+    let help_item = MenuItem::with_id(app_handle, "help", help_label, true, Some("CmdOrCtrl+?"))?;
     let lang_german = MenuItem::with_id(app_handle, "lang_de", "🇩🇪 Deutsch", true, None::<&str>)?;
     let lang_english = MenuItem::with_id(app_handle, "lang_en", "🇬🇧 English", true, None::<&str>)?;
     
@@ -636,7 +643,7 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
         app_handle,
         help_menu_label,
         true,
-        &[&github, &PredefinedMenuItem::separator(app_handle)?, &lang_german, &lang_english],
+        &[&help_item, &PredefinedMenuItem::separator(app_handle)?, &github, &PredefinedMenuItem::separator(app_handle)?, &lang_german, &lang_english],
     )?;
     
     let menu = Menu::with_items(
@@ -711,6 +718,15 @@ pub fn run() {
                         "lang_en" => {
                             let _ = build_menu(&app_handle_clone, "en");
                             let _ = window.emit("menu-action", "lang_en");
+                        }
+                        "theme_dark" => {
+                            let _ = window.emit("menu-action", "theme_dark");
+                        }
+                        "theme_light" => {
+                            let _ = window.emit("menu-action", "theme_light");
+                        }
+                        "help" => {
+                            let _ = window.emit("menu-action", "help");
                         }
                         "github" => {
                             let _ = Command::new("open")

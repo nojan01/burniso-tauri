@@ -1,4 +1,5 @@
-:root {
+/* Dark Theme (default) */
+:root, [data-theme="dark"] {
   --bg-primary: #1e1e1e;
   --bg-secondary: #2d2d2d;
   --bg-tertiary: #3d3d3d;
@@ -9,6 +10,36 @@
   --accent-red: #f44336;
   --accent-orange: #ff9800;
   --border-color: #444;
+  --log-bg: #0d0d0d;
+  --log-text: #00ff00;
+  --scrollbar-thumb: #555;
+  --scrollbar-thumb-hover: #666;
+  --hover-bg: #454545;
+  --modal-shadow: rgba(0, 0, 0, 0.5);
+  --backdrop-bg: rgba(0, 0, 0, 0.7);
+  --warning-gradient: linear-gradient(135deg, #553300 0%, #332200 100%);
+}
+
+/* Light Theme */
+[data-theme="light"] {
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e8e8e8;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666666;
+  --accent-blue: #0066cc;
+  --accent-green: #2e7d32;
+  --accent-red: #c62828;
+  --accent-orange: #ef6c00;
+  --border-color: #d0d0d0;
+  --log-bg: #fafafa;
+  --log-text: #1a1a1a;
+  --scrollbar-thumb: #c0c0c0;
+  --scrollbar-thumb-hover: #a0a0a0;
+  --hover-bg: #d8d8d8;
+  --modal-shadow: rgba(0, 0, 0, 0.25);
+  --backdrop-bg: rgba(0, 0, 0, 0.4);
+  --warning-gradient: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
 }
 
 * {
@@ -169,7 +200,7 @@ body {
 }
 
 .btn.secondary:hover:not(:disabled) {
-  background: #505050;
+  background: var(--hover-bg);
 }
 
 .btn.danger {
@@ -246,7 +277,7 @@ body {
 }
 
 .radio-label:hover {
-  background: #454545;
+  background: var(--hover-bg);
 }
 
 .radio-label input[type="radio"] {
@@ -292,14 +323,14 @@ body {
 .log-output {
   height: 180px;
   overflow-y: auto;
-  background: #0d0d0d;
+  background: var(--log-bg);
   border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 10px;
   font-family: 'SF Mono', Monaco, 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.5;
-  color: #00ff00;
+  color: var(--log-text);
   white-space: pre-wrap;
   word-wrap: break-word;
 }
@@ -332,12 +363,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #555;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #666;
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Password Modal */
@@ -363,7 +394,7 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--backdrop-bg);
   backdrop-filter: blur(4px);
 }
 
@@ -371,7 +402,7 @@ body {
   position: relative;
   background: var(--bg-secondary);
   border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px var(--modal-shadow);
   width: 90%;
   max-width: 400px;
   overflow: hidden;
@@ -460,8 +491,16 @@ body {
 
 /* Warning Modal Styles */
 .modal-header.warning {
-  background: linear-gradient(135deg, #553300 0%, #332200 100%);
+  background: var(--warning-gradient);
   border-bottom-color: rgba(255, 152, 0, 0.3);
+}
+
+[data-theme="light"] .modal-header.warning {
+  border-bottom-color: rgba(239, 108, 0, 0.3);
+}
+
+[data-theme="light"] .modal-header.warning h2 {
+  color: #bf360c;
 }
 
 .confirm-message {
@@ -489,7 +528,7 @@ body {
 }
 
 .checkbox-label:hover {
-  background: #454545;
+  background: var(--hover-bg);
 }
 
 .checkbox-label input[type="checkbox"] {

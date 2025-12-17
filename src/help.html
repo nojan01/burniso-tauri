@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BurnISO to USB - Hilfe</title>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --bg-secondary: #2d2d2d;
+      --text: #ffffff;
+      --text-secondary: #b0b0b0;
+      --accent: #007acc;
+      --border: #444;
+    }
+    
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f5f5;
+        --bg-secondary: #ffffff;
+        --text: #1a1a1a;
+        --text-secondary: #666666;
+        --accent: #0066cc;
+        --border: #d0d0d0;
+      }
+    }
+    
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 40px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    
+    h1 { font-size: 28px; margin-bottom: 8px; }
+    h2 { font-size: 20px; margin: 32px 0 16px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    h3 { font-size: 16px; margin: 20px 0 10px; }
+    
+    .subtitle { color: var(--text-secondary); margin-bottom: 32px; }
+    
+    p { margin-bottom: 12px; }
+    
+    .section {
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    
+    .feature {
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    
+    .feature-icon { font-size: 24px; margin-bottom: 8px; }
+    .feature h4 { font-size: 15px; margin-bottom: 4px; }
+    .feature p { font-size: 13px; color: var(--text-secondary); margin: 0; }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+    }
+    
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    
+    th { color: var(--text-secondary); font-weight: 500; font-size: 13px; }
+    td { font-size: 14px; }
+    
+    kbd {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 12px;
+    }
+    
+    .warning {
+      background: rgba(255, 152, 0, 0.15);
+      border-left: 3px solid #ff9800;
+      padding: 12px 16px;
+      border-radius: 4px;
+      margin: 16px 0;
+    }
+    
+    .tip {
+      background: rgba(0, 122, 204, 0.15);
+      border-left: 3px solid var(--accent);
+      padding: 12px 16px;
+      border-radius: 4px;
+      margin: 16px 0;
+    }
+    
+    ol, ul { padding-left: 24px; margin-bottom: 16px; }
+    li { margin-bottom: 8px; }
+    
+    .lang-switch {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      display: flex;
+      gap: 8px;
+    }
+    
+    .lang-btn {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-size: 14px;
+      color: var(--text);
+    }
+    
+    .lang-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+    
+    .content { display: none; }
+    .content.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="lang-switch">
+    <button class="lang-btn active" onclick="switchLang('de')">🇩🇪 Deutsch</button>
+    <button class="lang-btn" onclick="switchLang('en')">🇬🇧 English</button>
+  </div>
+
+  <!-- GERMAN -->
+  <div id="content-de" class="content active">
+    <h1>🔥 BurnISO to USB</h1>
+    <p class="subtitle">ISO-Images auf USB-Sticks brennen und USB-Backups erstellen</p>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <div class="feature-icon">🔥</div>
+        <h4>ISO auf USB brennen</h4>
+        <p>Schnelles Schreiben mit optionaler Verifizierung</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">💿</div>
+        <h4>USB-Backup erstellen</h4>
+        <p>Sektorgenaues oder dateibasiertes Backup</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🌍</div>
+        <h4>Mehrsprachig</h4>
+        <p>Deutsch und Englisch</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🎨</div>
+        <h4>Hell & Dunkel</h4>
+        <p>Wechselbares Design</p>
+      </div>
+    </div>
+
+    <h2>📀 ISO auf USB brennen</h2>
+    <div class="section">
+      <ol>
+        <li><strong>ISO-Datei auswählen:</strong> Klicke auf "Durchsuchen" oder <kbd>⌘O</kbd></li>
+        <li><strong>USB-Stick auswählen:</strong> Wähle den Stick aus dem Dropdown</li>
+        <li><strong>Optionen festlegen:</strong>
+          <ul>
+            <li>✅ Verifizieren – Prüft die geschriebenen Daten</li>
+            <li>✅ Auswerfen – Wirft den Stick automatisch aus</li>
+          </ul>
+        </li>
+        <li><strong>Brennen starten:</strong> Klicke auf den Button oder <kbd>⌘B</kbd></li>
+        <li><strong>Passwort eingeben:</strong> macOS-Benutzerpasswort für Schreibzugriff</li>
+      </ol>
+      
+      <div class="warning">
+        <strong>⚠️ Warnung:</strong> Alle Daten auf dem USB-Stick werden unwiderruflich gelöscht!
+      </div>
+    </div>
+
+    <h2>💿 USB-Backup erstellen</h2>
+    <div class="section">
+      <h3>Sektorgenaues Backup (Raw)</h3>
+      <p>Erstellt ein exaktes 1:1 Abbild des kompletten USB-Sticks als .iso Datei. Langsamer, aber 100% identisch.</p>
+      
+      <h3>Dateibasiertes Backup</h3>
+      <p>Sichert nur die belegten Daten als komprimiertes .dmg Image. Schneller und platzsparender.</p>
+      
+      <div class="tip">
+        <strong>💡 Tipp:</strong> Bei ISO-Images auf USB-Sticks wird automatisch nur die tatsächliche ISO-Größe gesichert, nicht der gesamte Stick.
+      </div>
+    </div>
+
+    <h2>⌨️ Tastenkürzel</h2>
+    <table>
+      <tr><th>Funktion</th><th>Tastenkürzel</th></tr>
+      <tr><td>ISO-Datei öffnen</td><td><kbd>⌘O</kbd></td></tr>
+      <tr><td>Speicherort wählen</td><td><kbd>⌘S</kbd></td></tr>
+      <tr><td>USB-Geräte aktualisieren</td><td><kbd>⌘R</kbd></td></tr>
+      <tr><td>Tab: ISO → USB</td><td><kbd>⌘1</kbd></td></tr>
+      <tr><td>Tab: USB → ISO</td><td><kbd>⌘2</kbd></td></tr>
+      <tr><td>ISO auf USB brennen</td><td><kbd>⌘B</kbd></td></tr>
+      <tr><td>USB sichern</td><td><kbd>⌘⇧B</kbd></td></tr>
+      <tr><td>Vorgang abbrechen</td><td><kbd>⌘.</kbd></td></tr>
+      <tr><td>Dunkles Design</td><td><kbd>⌘⇧D</kbd></td></tr>
+      <tr><td>Helles Design</td><td><kbd>⌘⇧L</kbd></td></tr>
+    </table>
+
+    <h2>❓ Fehlerbehebung</h2>
+    <div class="section">
+      <h3>Keine USB-Sticks gefunden</h3>
+      <p>Nur externe physische Geräte werden angezeigt. Klicke auf 🔄 zum Aktualisieren.</p>
+      
+      <h3>Passwort wird nicht akzeptiert</h3>
+      <p>Verwende dein macOS-Benutzerpasswort (nicht Apple-ID). Administrator-Rechte erforderlich.</p>
+      
+      <h3>Verifizierung fehlgeschlagen</h3>
+      <p>Der USB-Stick könnte defekt sein. Versuche einen anderen Port oder Stick.</p>
+    </div>
+  </div>
+
+  <!-- ENGLISH -->
+  <div id="content-en" class="content">
+    <h1>🔥 BurnISO to USB</h1>
+    <p class="subtitle">Burn ISO images to USB drives and create USB backups</p>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <div class="feature-icon">🔥</div>
+        <h4>Burn ISO to USB</h4>
+        <p>Fast writing with optional verification</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">💿</div>
+        <h4>Create USB Backup</h4>
+        <p>Sector-by-sector or file-based backup</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🌍</div>
+        <h4>Multilingual</h4>
+        <p>German and English</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🎨</div>
+        <h4>Light & Dark</h4>
+        <p>Switchable theme</p>
+      </div>
+    </div>
+
+    <h2>📀 Burn ISO to USB</h2>
+    <div class="section">
+      <ol>
+        <li><strong>Select ISO file:</strong> Click "Browse" or <kbd>⌘O</kbd></li>
+        <li><strong>Select USB drive:</strong> Choose from the dropdown</li>
+        <li><strong>Set options:</strong>
+          <ul>
+            <li>✅ Verify – Checks written data</li>
+            <li>✅ Eject – Automatically ejects the drive</li>
+          </ul>
+        </li>
+        <li><strong>Start burning:</strong> Click the button or <kbd>⌘B</kbd></li>
+        <li><strong>Enter password:</strong> macOS user password for write access</li>
+      </ol>
+      
+      <div class="warning">
+        <strong>⚠️ Warning:</strong> All data on the USB drive will be permanently deleted!
+      </div>
+    </div>
+
+    <h2>💿 Create USB Backup</h2>
+    <div class="section">
+      <h3>Sector-by-sector Backup (Raw)</h3>
+      <p>Creates an exact 1:1 copy of the entire USB drive as .iso file. Slower but 100% identical.</p>
+      
+      <h3>File-based Backup</h3>
+      <p>Backs up only used data as compressed .dmg image. Faster and space-saving.</p>
+      
+      <div class="tip">
+        <strong>💡 Tip:</strong> For ISO images on USB drives, only the actual ISO size is backed up, not the entire drive.
+      </div>
+    </div>
+
+    <h2>⌨️ Keyboard Shortcuts</h2>
+    <table>
+      <tr><th>Function</th><th>Shortcut</th></tr>
+      <tr><td>Open ISO file</td><td><kbd>⌘O</kbd></td></tr>
+      <tr><td>Choose destination</td><td><kbd>⌘S</kbd></td></tr>
+      <tr><td>Refresh USB devices</td><td><kbd>⌘R</kbd></td></tr>
+      <tr><td>Tab: ISO → USB</td><td><kbd>⌘1</kbd></td></tr>
+      <tr><td>Tab: USB → ISO</td><td><kbd>⌘2</kbd></td></tr>
+      <tr><td>Burn ISO to USB</td><td><kbd>⌘B</kbd></td></tr>
+      <tr><td>Backup USB</td><td><kbd>⌘⇧B</kbd></td></tr>
+      <tr><td>Cancel operation</td><td><kbd>⌘.</kbd></td></tr>
+      <tr><td>Dark Mode</td><td><kbd>⌘⇧D</kbd></td></tr>
+      <tr><td>Light Mode</td><td><kbd>⌘⇧L</kbd></td></tr>
+    </table>
+
+    <h2>❓ Troubleshooting</h2>
+    <div class="section">
+      <h3>No USB drives found</h3>
+      <p>Only external physical devices are shown. Click 🔄 to refresh.</p>
+      
+      <h3>Password not accepted</h3>
+      <p>Use your macOS user password (not Apple ID). Administrator rights required.</p>
+      
+      <h3>Verification failed</h3>
+      <p>The USB drive might be defective. Try a different port or drive.</p>
+    </div>
+  </div>
+
+  <script>
+    function switchLang(lang) {
+      document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('content-' + lang).classList.add('active');
+      document.querySelector('.lang-btn[onclick*="' + lang + '"]').classList.add('active');
+    }
+  </script>
+</body>
+</html>

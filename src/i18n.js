@@ -1,13 +1,26 @@
-// Internationalization Module
+// Internationalization & Theme Module
 const i18n = {
   currentLang: 'de',
+  currentTheme: 'dark',
   translations: {},
   
   async init() {
     // Load saved language preference
-    const saved = localStorage.getItem('language');
-    this.currentLang = saved || (navigator.language.startsWith('de') ? 'de' : 'en');
+    const savedLang = localStorage.getItem('language');
+    this.currentLang = savedLang || (navigator.language.startsWith('de') ? 'de' : 'en');
     await this.loadTranslations(this.currentLang);
+    
+    // Load saved theme preference (default: system preference or dark)
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme) {
+      this.currentTheme = savedTheme;
+    } else {
+      // Check system preference
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      this.currentTheme = prefersDark ? 'dark' : 'light';
+    }
+    this.applyTheme(this.currentTheme);
+    
     // Set menu language on startup
     this.updateMenuLanguage(this.currentLang);
   },
@@ -88,6 +101,22 @@ const i18n = {
     
     // Update document title
     document.title = this.t('app.title');
+  },
+  
+  applyTheme(theme) {
+    this.currentTheme = theme;
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  },
+  
+  setTheme(theme) {
+    this.applyTheme(theme);
+  },
+  
+  toggleTheme() {
+    const newTheme = this.currentTheme === 'dark' ? 'light' : 'dark';
+    this.applyTheme(newTheme);
+    return newTheme;
   }
 };
 

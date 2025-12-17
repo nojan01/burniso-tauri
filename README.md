@@ -1,7 +1,243 @@
-# Tauri + Vanilla
+# 🔥 BurnISO to USB
 
-This template should help get you started developing with Tauri in vanilla HTML, CSS and Javascript.
+<p align="center">
+  <img src="src-tauri/icons/icon.png" width="128" height="128" alt="BurnISO to USB Icon">
+</p>
 
-## Recommended IDE Setup
+<p align="center">
+  <strong>Eine moderne macOS-App zum Brennen von ISO-Images auf USB-Sticks und zum Erstellen von USB-Backups</strong>
+</p>
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#verwendung">Verwendung</a> •
+  <a href="#tastenkürzel">Tastenkürzel</a> •
+  <a href="#entwicklung">Entwicklung</a> •
+  <a href="#lizenz">Lizenz</a>
+</p>
+
+---
+
+## Features
+
+### 🔥 ISO auf USB brennen
+- **Schnelles Schreiben** von ISO-Images auf USB-Sticks
+- **Byte-für-Byte Verifizierung** nach dem Brennen (optional)
+- **Automatisches Auswerfen** des USB-Sticks nach Abschluss
+- **Fortschrittsanzeige** in Echtzeit mit Phasenindikator
+
+### 💿 USB-Backup erstellen
+- **Sektorgenaues Backup (Raw)** - Komplettes 1:1 Image des gesamten USB-Sticks
+- **Dateibasiertes Backup** - Nur belegte Daten, schneller und komprimiert (DMG)
+- **Automatische Erkennung** des Dateisystems (APFS, HFS+, FAT32, ExFAT)
+- **ISO-Image Erkennung** - Bei ISOs auf USB wird nur die tatsächliche Größe gesichert
+
+### 🌍 Mehrsprachig
+- **Deutsch** und **English** - Umschaltbar über das Hilfe-Menü
+- Automatische Erkennung der Systemsprache beim ersten Start
+
+### 🎨 Design
+- **Dunkles Design** (Standard) - Schont die Augen
+- **Helles Design** - Für helle Umgebungen
+- Umschaltbar über das Fenster-Menü
+
+### ⌨️ Native macOS-Integration
+- Vollständiges macOS-Menü mit allen Funktionen
+- Tastenkürzel für schnellen Zugriff
+- Fensterposition wird gespeichert
+
+---
+
+## Installation
+
+### Voraussetzungen
+- macOS 10.15 (Catalina) oder neuer
+- Administrator-Rechte (für USB-Zugriff)
+
+### Download
+1. Lade die neueste Version von der [Releases-Seite](https://github.com/nojan01/burniso-tauri/releases) herunter
+2. Entpacke die ZIP-Datei
+3. Ziehe **BurnISO to USB.app** in den Programme-Ordner
+4. Beim ersten Start: Rechtsklick → Öffnen (wegen Gatekeeper)
+
+### Aus Quellcode bauen
+```bash
+# Repository klonen
+git clone https://github.com/nojan01/burniso-tauri.git
+cd burniso-tauri
+
+# Abhängigkeiten installieren (Rust und Node.js erforderlich)
+cargo tauri build
+
+# App befindet sich in: src-tauri/target/release/bundle/macos/
+```
+
+---
+
+## Verwendung
+
+### ISO auf USB brennen
+
+1. **ISO-Datei auswählen**
+   - Klicke auf "Durchsuchen" oder verwende `⌘O`
+   - Wähle die gewünschte ISO-Datei aus
+
+2. **USB-Stick auswählen**
+   - Stecke den USB-Stick ein
+   - Wähle ihn aus dem Dropdown-Menü
+   - Bei Bedarf: `⌘R` zum Aktualisieren der Liste
+
+3. **Optionen festlegen**
+   - ✅ **Verifizieren** - Empfohlen! Prüft ob alle Daten korrekt geschrieben wurden
+   - ✅ **Auswerfen** - Wirft den Stick nach Abschluss sicher aus
+
+4. **Brennvorgang starten**
+   - Klicke auf "🔥 ISO auf USB brennen" oder `⌘B`
+   - Gib dein macOS-Passwort ein (für Schreibzugriff)
+   - Warte bis der Vorgang abgeschlossen ist
+
+> ⚠️ **Warnung**: Alle Daten auf dem USB-Stick werden unwiderruflich gelöscht!
+
+### USB-Backup erstellen
+
+1. **USB-Stick auswählen**
+   - Stecke den USB-Stick ein
+   - Wähle ihn aus dem Dropdown-Menü
+
+2. **Speicherort wählen**
+   - Klicke auf "Speichern unter" oder verwende `⌘S`
+   - Wähle den Zielordner und Dateinamen
+
+3. **Sicherungsmodus wählen**
+   - **Sektorgenau (Raw)**: Exaktes 1:1 Abbild des gesamten Sticks (.iso)
+   - **Dateibasiert**: Nur belegte Daten, komprimiert (.dmg)
+   
+   > 💡 Dateibasiert ist nur bei unterstützten Dateisystemen verfügbar
+
+4. **Backup starten**
+   - Klicke auf "💿 USB sichern" oder `⌘⇧B`
+   - Bei Raw-Backup: macOS-Passwort eingeben
+
+---
+
+## Tastenkürzel
+
+| Funktion | Tastenkürzel |
+|----------|--------------|
+| ISO-Datei öffnen | `⌘O` |
+| Speicherort wählen | `⌘S` |
+| USB-Geräte aktualisieren | `⌘R` |
+| Tab: ISO → USB | `⌘1` |
+| Tab: USB → ISO | `⌘2` |
+| ISO auf USB brennen | `⌘B` |
+| USB sichern | `⌘⇧B` |
+| Vorgang abbrechen | `⌘.` |
+| Dunkles Design | `⌘⇧D` |
+| Helles Design | `⌘⇧L` |
+| Fenster schließen | `⌘W` |
+| App beenden | `⌘Q` |
+
+---
+
+## Unterstützte Formate
+
+### ISO-Dateien (Brennen)
+- Standard ISO 9660 Images
+- Linux-Distributionen (Ubuntu, Fedora, Debian, etc.)
+- Windows ISO-Images
+- macOS Installer Images
+- Hybrid ISO/IMG Images
+
+### Dateisysteme (Backup)
+- **APFS** - Apple File System
+- **HFS+** - Mac OS Extended
+- **FAT32** - Windows-kompatibel
+- **ExFAT** - Große Dateien, plattformübergreifend
+- **ISO 9660** - CD/DVD Images (automatische Größenerkennung)
+
+---
+
+## Fehlerbehebung
+
+### "Keine USB-Sticks gefunden"
+- Stelle sicher, dass der USB-Stick korrekt eingesteckt ist
+- Nur **externe physische Geräte** werden angezeigt (keine Disk-Images)
+- Klicke auf 🔄 zum Aktualisieren
+
+### "Passwort wird nicht akzeptiert"
+- Verwende dein **macOS-Benutzerpasswort** (nicht Apple-ID)
+- Der Benutzer muss Administrator-Rechte haben
+
+### "Verifizierung fehlgeschlagen"
+- Der USB-Stick könnte defekt sein
+- Versuche einen anderen USB-Port
+- Verwende einen anderen USB-Stick
+
+### App startet nicht
+- Rechtsklick auf die App → "Öffnen" (bei Gatekeeper-Warnung)
+- macOS 10.15 oder neuer erforderlich
+
+---
+
+## Entwicklung
+
+### Technologie-Stack
+- **[Tauri v2](https://tauri.app/)** - Rust-basiertes App-Framework
+- **Rust** - Backend-Logik und System-APIs
+- **HTML/CSS/JavaScript** - Frontend
+- **diskutil** - macOS Disk-Management
+
+### Projekt-Struktur
+```
+burniso-tauri/
+├── src/                    # Frontend (HTML, CSS, JS)
+│   ├── index.html
+│   ├── styles.css
+│   ├── main.js
+│   ├── i18n.js            # Internationalisierung
+│   └── i18n/              # Übersetzungen
+│       ├── de.json
+│       └── en.json
+├── src-tauri/             # Backend (Rust)
+│   ├── src/
+│   │   ├── main.rs
+│   │   └── lib.rs         # Hauptlogik
+│   ├── icons/             # App-Icons
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+└── README.md
+```
+
+### Entwicklungsumgebung einrichten
+```bash
+# Rust installieren
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Tauri CLI installieren
+cargo install tauri-cli
+
+# Im Entwicklungsmodus starten
+cargo tauri dev
+
+# Release-Build erstellen
+cargo tauri build
+```
+
+---
+
+## Lizenz
+
+MIT License - Siehe [LICENSE](LICENSE) für Details.
+
+---
+
+## Autor
+
+**Norbert Jander** - [GitHub](https://github.com/nojan01)
+
+---
+
+<p align="center">
+  Made with ❤️ and 🦀 Rust
+</p>
