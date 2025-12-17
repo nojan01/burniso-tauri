@@ -1,5 +1,9 @@
 // Wait for Tauri to be ready
 document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize i18n first
+  await window.i18n.init();
+  window.i18n.applyTranslations();
+  
   // Wait a bit for Tauri to initialize
   await new Promise(resolve => setTimeout(resolve, 100));
   
@@ -223,14 +227,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load disks (with logging)
   async function loadDisks(selectElement, infoElement, logFn) {
-    selectElement.innerHTML = '<option value="">Lädt...</option>';
+    selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
     
     try {
       const disks = await invoke('list_disks');
-      selectElement.innerHTML = '<option value="">-- USB-Stick wählen --</option>';
+      selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
       
       if (disks.length === 0) {
-        logFn('Keine externen USB-Sticks gefunden', 'warning');
+        logFn('No external USB drives found', 'warning');
       } else {
         disks.forEach(function(disk) {
           const option = document.createElement('option');
@@ -238,11 +242,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           option.textContent = disk.id + ' - ' + disk.name + ' (' + disk.size + ')';
           selectElement.appendChild(option);
         });
-        logFn(disks.length + ' externe(r) USB-Stick(s) gefunden', 'info');
+        logFn(disks.length + ' external USB drive(s) found', 'info');
       }
     } catch (err) {
-      selectElement.innerHTML = '<option value="">Fehler beim Laden</option>';
-      logFn('Fehler: ' + err, 'error');
+      selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
+      logFn('Error: ' + err, 'error');
     }
     
     infoElement.classList.remove('visible');
@@ -250,11 +254,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load disks silently (no logging)
   async function loadDisksSilent(selectElement, infoElement) {
-    selectElement.innerHTML = '<option value="">Lädt...</option>';
+    selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
     
     try {
       const disks = await invoke('list_disks');
-      selectElement.innerHTML = '<option value="">-- USB-Stick wählen --</option>';
+      selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
       
       disks.forEach(function(disk) {
         const option = document.createElement('option');
@@ -263,7 +267,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         selectElement.appendChild(option);
       });
     } catch (err) {
-      selectElement.innerHTML = '<option value="">Fehler beim Laden</option>';
+      selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
     }
     
     infoElement.classList.remove('visible');
@@ -276,7 +280,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       infoElement.textContent = info;
       infoElement.classList.add('visible');
     } catch (err) {
-      logFn('Fehler beim Laden der Disk-Info: ' + err, 'error');
+      logFn('Error loading disk info: ' + err, 'error');
     }
   }
 
@@ -331,11 +335,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (selected) {
         selectedIsoPath = selected;
         isoPathInput.value = selected;
-        logBurn('ISO ausgewählt: ' + selected, 'success');
+        logBurn('ISO selected: ' + selected, 'success');
         updateBurnButton();
       }
     } catch (err) {
-      logBurn('Fehler beim Auswählen: ' + err, 'error');
+      logBurn('Selection error: ' + err, 'error');
     }
   });
 
@@ -347,7 +351,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (burnDiskSelect.value) {
       selectedBurnDisk = JSON.parse(burnDiskSelect.value);
       await showDiskInfo(selectedBurnDisk.id, burnDiskInfo, logBurn);
-      logBurn('USB ausgewählt: ' + selectedBurnDisk.name + ' (' + selectedBurnDisk.size + ')', 'info');
+      logBurn('USB selected: ' + selectedBurnDisk.name + ' (' + selectedBurnDisk.size + ')', 'info');
     } else {
       selectedBurnDisk = null;
       burnDiskInfo.classList.remove('visible');
@@ -358,25 +362,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   burnBtn.addEventListener('click', async function() {
     if (!selectedIsoPath || !selectedBurnDisk) return;
     
-    // Bestätigung mit App-eigenem Dialog
+    // Confirmation dialog
     const confirmed = await requestConfirm(
-      '⚠️ WARNUNG!',
-      'Alle Daten auf "' + selectedBurnDisk.name + '" (' + selectedBurnDisk.id + ') werden UNWIDERRUFLICH gelöscht!\n\nFortfahren?',
-      'Ja, löschen',
-      'Abbrechen'
+      '⚠️ WARNING!',
+      'All data on "' + selectedBurnDisk.name + '" (' + selectedBurnDisk.id + ') will be PERMANENTLY deleted!\n\nContinue?',
+      'Yes, delete',
+      'Cancel'
     );
     
     if (!confirmed) {
-      logBurn('Brennvorgang abgebrochen', 'warning');
+      logBurn('Burn cancelled', 'warning');
       return;
     }
 
     // Passwort im App-Fenster abfragen
     let password;
     try {
-      password = await requestPassword('Zum Schreiben auf den USB-Stick werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
+      password = await requestPassword('Administrator privileges required to write to USB drive.\n\nPlease enter your macOS password:');
     } catch (err) {
-      logBurn('Passwortabfrage abgebrochen', 'warning');
+      logBurn('Password prompt cancelled', 'warning');
       return;
     }
     
@@ -384,19 +388,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     const doVerify = verifyAfterBurn.checked;
     const doEject = ejectAfterBurn.checked;
     
-    // Brennvorgang starten
+    // Start burn
     isBurning = true;
     burnCancelled = false;
     burnBtn.disabled = true;
     cancelBurnBtn.disabled = false;
     burnProgressFill.style.width = '0%';
     burnProgressText.textContent = '0%';
-    burnPhase.textContent = 'Phase 1: Schreiben...';
+    burnPhase.textContent = 'Phase 1: Writing...';
     burnPhase.className = 'phase-text writing';
     
-    logBurn('Starte Brennvorgang...', 'info');
+    logBurn('Starting burn process...', 'info');
     if (doVerify) {
-      logBurn('Verifizierung nach dem Brennen aktiviert', 'info');
+      logBurn('Verification after burn enabled', 'info');
     }
     
     try {
@@ -410,7 +414,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       logBurn(result, 'success');
       burnProgressFill.style.width = '100%';
       burnProgressText.textContent = '100%';
-      burnPhase.textContent = doVerify ? '✓ Geschrieben und verifiziert!' : '✓ Erfolgreich geschrieben!';
+      burnPhase.textContent = doVerify ? '✓ Written and verified!' : '✓ Successfully written!';
       burnPhase.className = 'phase-text success';
       
       isBurning = false;
@@ -418,14 +422,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       cancelBurnBtn.disabled = true;
       loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
     } catch (err) {
-      // Bei Abbruch: Nur kurze Meldung, kein "Fehler:"
+      // On cancel: Short message only
       if (burnCancelled) {
-        logBurn('✗ Brennvorgang abgebrochen', 'warning');
-        burnPhase.textContent = 'Abgebrochen';
+        logBurn('✗ Burn cancelled', 'warning');
+        burnPhase.textContent = 'Cancelled';
         burnPhase.className = 'phase-text error';
       } else {
-        logBurn('Fehler: ' + err, 'error');
-        burnPhase.textContent = 'Fehler!';
+        logBurn('Error: ' + err, 'error');
+        burnPhase.textContent = 'Error!';
         burnPhase.className = 'phase-text error';
       }
       resetBurnState(true); // silent reset
@@ -437,9 +441,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     cancelBurnBtn.disabled = true;
     try {
       await invoke('cancel_burn');
-      logBurn('Abbruch wird durchgeführt...', 'warning');
+      logBurn('Cancelling...', 'warning');
     } catch (err) {
-      logBurn('Abbruch-Fehler: ' + err, 'error');
+      logBurn('Cancel error: ' + err, 'error');
     }
   });
 
@@ -453,7 +457,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       selectedBackupDisk = JSON.parse(backupDiskSelect.value);
       await showDiskInfo(selectedBackupDisk.id, backupDiskInfo, logBackup);
       await checkVolumeInfo(selectedBackupDisk.id);
-      logBackup('USB ausgewählt: ' + selectedBackupDisk.name + ' (' + selectedBackupDisk.size + ')', 'info');
+      logBackup('USB selected: ' + selectedBackupDisk.name + ' (' + selectedBackupDisk.size + ')', 'info');
     } else {
       selectedBackupDisk = null;
       backupDiskInfo.classList.remove('visible');
@@ -481,11 +485,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (selected) {
         selectedBackupDestination = selected;
         backupDestinationInput.value = selected;
-        logBackup('Speicherort: ' + selected, 'success');
+        logBackup('Destination: ' + selected, 'success');
         updateBackupButton();
       }
     } catch (err) {
-      logBackup('Fehler beim Auswählen: ' + err, 'error');
+      logBackup('Selection error: ' + err, 'error');
     }
   });
 
@@ -498,9 +502,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let password = null;
     if (!isFilesystemMode) {
       try {
-        password = await requestPassword('Zum Lesen des USB-Sticks werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
+        password = await requestPassword('Administrator privileges required to read USB drive.\n\nPlease enter your macOS password:');
       } catch (err) {
-        logBackup('Passwortabfrage abgebrochen', 'warning');
+        logBackup('Password prompt cancelled', 'warning');
         return;
       }
     }
@@ -512,7 +516,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     backupProgressFill.style.width = '0%';
     backupProgressText.textContent = '0%';
     
-    logBackup('Starte Sicherung (' + (isFilesystemMode ? 'Dateibasiert' : 'Sektorgenau') + ')...', 'info');
+    logBackup('Starting backup (' + (isFilesystemMode ? 'Filesystem' : 'Raw') + ')...', 'info');
     
     try {
       let result;
@@ -528,7 +532,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let backupSize = selectedBackupDisk.bytes || 0;
         if (volumeInfo && volumeInfo.filesystem && volumeInfo.filesystem.startsWith('ISO:')) {
           backupSize = volumeInfo.bytes || backupSize;
-          logBackup('ISO-Image erkannt: Nur ' + formatBytes(backupSize) + ' werden gesichert (statt ' + selectedBackupDisk.size + ')', 'info');
+          logBackup('ISO image detected: Only ' + formatBytes(backupSize) + ' will be backed up (instead of ' + selectedBackupDisk.size + ')', 'info');
         }
         
         result = await invoke('backup_usb_raw', {
@@ -548,11 +552,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       cancelBackupBtn.disabled = true;
       loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
     } catch (err) {
-      // Bei Abbruch: Nur kurze Meldung
+      // On cancel: Short message only
       if (backupCancelled) {
-        logBackup('✗ Sicherung abgebrochen', 'warning');
+        logBackup('✗ Backup cancelled', 'warning');
       } else {
-        logBackup('Fehler: ' + err, 'error');
+        logBackup('Error: ' + err, 'error');
       }
       resetBackupState(true); // silent reset
     }
@@ -563,9 +567,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     cancelBackupBtn.disabled = true;
     try {
       await invoke('cancel_backup');
-      logBackup('Abbruch wird durchgeführt...', 'warning');
+      logBackup('Cancelling...', 'warning');
     } catch (err) {
-      logBackup('Abbruch-Fehler: ' + err, 'error');
+      logBackup('Cancel error: ' + err, 'error');
     }
   });
 
@@ -595,17 +599,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   listen('burn_phase', function(event) {
     const phase = event.payload;
     if (phase === 'writing') {
-      burnPhase.textContent = 'Phase 1: Schreiben...';
+      burnPhase.textContent = 'Phase 1: Writing...';
       burnPhase.className = 'phase-text writing';
     } else if (phase === 'verifying') {
-      burnPhase.textContent = 'Phase 2: Verifizieren...';
+      burnPhase.textContent = 'Phase 2: Verifying...';
       burnPhase.className = 'phase-text verifying';
-      logBurn('Starte Verifizierung...', 'info');
+      logBurn('Starting verification...', 'info');
     } else if (phase === 'success') {
-      burnPhase.textContent = '✓ Erfolgreich abgeschlossen!';
+      burnPhase.textContent = '✓ Successfully completed!';
       burnPhase.className = 'phase-text success';
     } else if (phase === 'error') {
-      burnPhase.textContent = '✗ Fehler bei Verifizierung!';
+      burnPhase.textContent = '✗ Verification failed!';
       burnPhase.className = 'phase-text error';
     }
   });
@@ -639,6 +643,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'cancel_action':
         if (!cancelBurnBtn.disabled) cancelBurnBtn.click();
         if (!cancelBackupBtn.disabled) cancelBackupBtn.click();
+        break;
+      case 'lang_de':
+        window.i18n.setLanguage('de');
+        break;
+      case 'lang_en':
+        window.i18n.setLanguage('en');
         break;
     }
   });
@@ -693,8 +703,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Initialize
-  logBurn('BurnISO to USB bereit', 'info');
-  logBackup('USB Backup bereit', 'info');
+  logBurn('BurnISO to USB ready', 'info');
+  logBackup('USB Backup ready', 'info');
   loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
   loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
   

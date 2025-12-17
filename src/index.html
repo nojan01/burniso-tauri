@@ -13,14 +13,14 @@
     <div class="modal-content modal-warning">
       <div class="modal-header warning">
         <span class="modal-icon">⚠️</span>
-        <h2 id="confirm-title">Warnung</h2>
+        <h2 id="confirm-title" data-i18n="dialogs.warning">Warnung</h2>
       </div>
       <div class="modal-body">
-        <p id="confirm-message" class="confirm-message">Sind Sie sicher?</p>
+        <p id="confirm-message" class="confirm-message" data-i18n="dialogs.confirm">Sind Sie sicher?</p>
       </div>
       <div class="modal-footer">
-        <button id="confirm-cancel-btn" class="btn secondary">Abbrechen</button>
-        <button id="confirm-ok-btn" class="btn danger">Ja, löschen</button>
+        <button id="confirm-cancel-btn" class="btn secondary" data-i18n="dialogs.cancel">Abbrechen</button>
+        <button id="confirm-ok-btn" class="btn danger" data-i18n="dialogs.yes">Ja, löschen</button>
       </div>
     </div>
   </div>
@@ -31,17 +31,17 @@
     <div class="modal-content">
       <div class="modal-header">
         <span class="modal-icon">🔐</span>
-        <h2>Administrator-Passwort</h2>
+        <h2 data-i18n="dialogs.adminPassword">Administrator-Passwort</h2>
       </div>
       <div class="modal-body">
-        <p id="password-prompt">Zum Ausführen dieser Aktion werden Administrator-Rechte benötigt.</p>
+        <p id="password-prompt" data-i18n="dialogs.adminPasswordPrompt">Zum Ausführen dieser Aktion werden Administrator-Rechte benötigt.</p>
         <div class="password-input-wrapper">
-          <input type="password" id="password-input" placeholder="macOS-Passwort eingeben" autocomplete="off" />
+          <input type="password" id="password-input" data-i18n-placeholder="dialogs.enterPassword" placeholder="macOS-Passwort eingeben" autocomplete="off" />
         </div>
       </div>
       <div class="modal-footer">
-        <button id="password-cancel-btn" class="btn secondary">Abbrechen</button>
-        <button id="password-ok-btn" class="btn primary">OK</button>
+        <button id="password-cancel-btn" class="btn secondary" data-i18n="dialogs.cancel">Abbrechen</button>
+        <button id="password-ok-btn" class="btn primary" data-i18n="dialogs.ok">OK</button>
       </div>
     </div>
   </div>
@@ -51,58 +51,58 @@
     <header class="app-header">
       <div class="header-icon">🔥</div>
       <div class="header-text">
-        <h1>burnISOtoUSB</h1>
-        <p>ISO ↔ USB Images verwalten</p>
+        <h1 data-i18n="app.title">burnISOtoUSB</h1>
+        <p data-i18n="app.subtitle">ISO ↔ USB Images verwalten</p>
       </div>
     </header>
     <div class="tabs">
-      <button class="tab-btn active" data-tab="burn">ISO → USB</button>
-      <button class="tab-btn" data-tab="backup">USB → ISO</button>
+      <button class="tab-btn active" data-tab="burn" data-i18n="tabs.burn">ISO → USB</button>
+      <button class="tab-btn" data-tab="backup" data-i18n="tabs.backup">USB → ISO</button>
     </div>
 
     <!-- ISO to USB Tab -->
     <div id="burn-tab" class="tab-content active">
       <div class="section">
-        <h3>📀 ISO-Datei auswählen</h3>
+        <h3>📀 <span data-i18n="burn.selectIso">ISO-Datei auswählen</span></h3>
         <div class="file-input-row">
-          <input type="text" id="iso-path" placeholder="Keine Datei ausgewählt" readonly />
-          <button id="select-iso-btn" class="btn secondary">Durchsuchen</button>
+          <input type="text" id="iso-path" data-i18n-placeholder="burn.noFile" placeholder="Keine Datei ausgewählt" readonly />
+          <button id="select-iso-btn" class="btn secondary" data-i18n="burn.browse">Durchsuchen</button>
         </div>
       </div>
 
       <div class="section">
-        <h3>💾 USB-Stick auswählen</h3>
+        <h3>💾 <span data-i18n="burn.selectUsb">USB-Stick auswählen</span></h3>
         <div class="disk-row">
           <select id="burn-disk-select">
-            <option value="">-- USB-Stick wählen --</option>
+            <option value="" data-i18n="burn.selectUsbPlaceholder">-- USB-Stick wählen --</option>
           </select>
-          <button id="refresh-burn-disks" class="btn secondary icon-btn" title="Aktualisieren">🔄</button>
+          <button id="refresh-burn-disks" class="btn secondary icon-btn" data-i18n-title="burn.refresh" title="Aktualisieren">🔄</button>
         </div>
         <div id="burn-disk-info" class="disk-info"></div>
       </div>
 
       <div class="section">
-        <h3>⚙️ Optionen</h3>
+        <h3>⚙️ <span data-i18n="burn.options">Optionen</span></h3>
         <div class="checkbox-group">
           <label class="checkbox-label">
             <input type="checkbox" id="verify-after-burn" checked />
             <span class="checkbox-text">
-              <strong>Nach dem Brennen verifizieren</strong>
-              <small>Vergleicht geschriebene Daten mit der ISO-Datei</small>
+              <strong data-i18n="burn.verifyAfterBurn">Nach dem Brennen verifizieren</strong>
+              <small data-i18n="burn.verifyDescription">Vergleicht geschriebene Daten mit der ISO-Datei</small>
             </span>
           </label>
           <label class="checkbox-label">
             <input type="checkbox" id="eject-after-burn" checked />
             <span class="checkbox-text">
-              <strong>USB-Stick nach Abschluss auswerfen</strong>
-              <small>Wirft den Datenträger sicher aus</small>
+              <strong data-i18n="burn.ejectAfterBurn">USB-Stick nach Abschluss auswerfen</strong>
+              <small data-i18n="burn.ejectDescription">Wirft den Datenträger sicher aus</small>
             </span>
           </label>
         </div>
       </div>
 
       <div class="section">
-        <h3>📊 Fortschritt</h3>
+        <h3>📊 <span data-i18n="burn.progress">Fortschritt</span></h3>
         <div class="progress-container">
           <div class="progress-bar" id="burn-progress">
             <div class="progress-fill" id="burn-progress-fill"></div>
@@ -113,12 +113,12 @@
       </div>
 
       <div class="button-row">
-        <button id="burn-btn" class="btn primary large" disabled>🔥 ISO auf USB brennen</button>
-        <button id="cancel-burn-btn" class="btn danger" disabled>Abbrechen</button>
+        <button id="burn-btn" class="btn primary large" disabled><span data-i18n="burn.burnButton">🔥 ISO auf USB brennen</span></button>
+        <button id="cancel-burn-btn" class="btn danger" disabled data-i18n="burn.cancel">Abbrechen</button>
       </div>
 
       <div class="section">
-        <h3>📋 Protokoll</h3>
+        <h3>📋 <span data-i18n="burn.log">Protokoll</span></h3>
         <div id="burn-log" class="log-output"></div>
       </div>
     </div>
@@ -126,49 +126,49 @@
     <!-- USB to ISO Tab -->
     <div id="backup-tab" class="tab-content">
       <div class="section">
-        <h3>💾 USB-Stick auswählen</h3>
+        <h3>💾 <span data-i18n="backup.selectUsb">USB-Stick auswählen</span></h3>
         <div class="disk-row">
           <select id="backup-disk-select">
-            <option value="">-- USB-Stick wählen --</option>
+            <option value="" data-i18n="backup.selectUsbPlaceholder">-- USB-Stick wählen --</option>
           </select>
-          <button id="refresh-backup-disks" class="btn secondary icon-btn" title="Aktualisieren">🔄</button>
+          <button id="refresh-backup-disks" class="btn secondary icon-btn" data-i18n-title="burn.refresh" title="Aktualisieren">🔄</button>
         </div>
         <div id="backup-disk-info" class="disk-info"></div>
       </div>
 
       <div class="section">
-        <h3>📁 Speicherort für Image</h3>
+        <h3>📁 <span data-i18n="backup.selectDestination">Speicherort für Image</span></h3>
         <div class="file-input-row">
-          <input type="text" id="backup-destination" placeholder="Ziel wählen" readonly />
-          <button id="select-destination-btn" class="btn secondary">Speichern unter</button>
+          <input type="text" id="backup-destination" data-i18n-placeholder="backup.destinationPlaceholder" placeholder="Ziel wählen" readonly />
+          <button id="select-destination-btn" class="btn secondary" data-i18n="backup.saveAs">Speichern unter</button>
         </div>
       </div>
 
       <div class="section">
-        <h3>⚙️ Sicherungsmodus</h3>
+        <h3>⚙️ <span data-i18n="backup.backupMode">Sicherungsmodus</span></h3>
         <div class="radio-group">
           <label class="radio-label">
             <input type="radio" name="backup-mode" value="raw" checked />
             <span class="radio-text">
-              <strong>Sektorgenau (Raw)</strong>
-              <small>Komplettes Image inkl. aller Sektoren - langsamer aber exakt</small>
+              <strong data-i18n="backup.rawMode">Sektorgenau (Raw)</strong>
+              <small data-i18n="backup.rawDescription">Komplettes Image inkl. aller Sektoren - langsamer aber exakt</small>
             </span>
           </label>
           <label class="radio-label" id="filesystem-mode-label">
             <input type="radio" name="backup-mode" value="filesystem" disabled />
             <span class="radio-text">
-              <strong>Dateibasiert (Schnell)</strong>
-              <small>Nur belegte Dateien - schneller und komprimiert</small>
+              <strong data-i18n="backup.filesystemMode">Dateibasiert (Schnell)</strong>
+              <small data-i18n="backup.filesystemDescription">Nur belegte Dateien - schneller und komprimiert</small>
             </span>
           </label>
         </div>
         <div id="filesystem-note" class="note hidden">
-          ✅ Dateisystem unterstützt: <span id="detected-fs"></span>
+          ✅ <span data-i18n="backup.filesystemSupported">Dateisystem unterstützt:</span> <span id="detected-fs"></span>
         </div>
       </div>
 
       <div class="section">
-        <h3>📊 Fortschritt</h3>
+        <h3>📊 <span data-i18n="backup.progress">Fortschritt</span></h3>
         <div class="progress-container">
           <div class="progress-bar" id="backup-progress">
             <div class="progress-fill" id="backup-progress-fill"></div>
@@ -178,17 +178,18 @@
       </div>
 
       <div class="button-row">
-        <button id="backup-btn" class="btn primary large" disabled>💿 USB sichern</button>
-        <button id="cancel-backup-btn" class="btn danger" disabled>Abbrechen</button>
+        <button id="backup-btn" class="btn primary large" disabled><span data-i18n="backup.backupButton">💿 USB sichern</span></button>
+        <button id="cancel-backup-btn" class="btn danger" disabled data-i18n="backup.cancel">Abbrechen</button>
       </div>
 
       <div class="section">
-        <h3>�� Protokoll</h3>
+        <h3>📋 <span data-i18n="backup.log">Protokoll</span></h3>
         <div id="backup-log" class="log-output"></div>
       </div>
     </div>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

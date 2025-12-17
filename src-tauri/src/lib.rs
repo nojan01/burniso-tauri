@@ -539,22 +539,48 @@ async fn backup_usb_filesystem(app: AppHandle, mount_point: String, destination:
 
 // ========== Menu Building ==========
 
-fn build_menu(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (about_label, about_comments, hide_label, hide_others_label, show_all_label, quit_label) = if lang == "en" {
+        ("About BurnISO to USB", "Burn ISO to USB & Backup USB", "Hide BurnISO to USB", "Hide Others", "Show All", "Quit BurnISO to USB")
+    } else {
+        ("Über BurnISO to USB", "ISO auf USB brennen & USB sichern", "BurnISO to USB ausblenden", "Andere ausblenden", "Alle einblenden", "BurnISO to USB beenden")
+    };
+    
+    let (file_menu_label, select_iso_label, select_destination_label, refresh_label, close_label) = if lang == "en" {
+        ("File", "Open ISO File...", "Choose Destination...", "Refresh USB Devices", "Close Window")
+    } else {
+        ("Ablage", "ISO-Datei öffnen...", "Speicherort wählen...", "USB-Geräte aktualisieren", "Fenster schließen")
+    };
+    
+    let (action_menu_label, start_burn_label, start_backup_label, cancel_label) = if lang == "en" {
+        ("Action", "Burn ISO to USB", "Backup USB", "Cancel Operation")
+    } else {
+        ("Aktion", "ISO auf USB brennen", "USB sichern", "Vorgang abbrechen")
+    };
+    
+    let (window_menu_label, minimize_label, fullscreen_label) = if lang == "en" {
+        ("Window", "Minimize", "Fullscreen")
+    } else {
+        ("Fenster", "Im Dock ablegen", "Vollbild")
+    };
+    
+    let help_menu_label = if lang == "en" { "Help" } else { "Hilfe" };
+    
     let about_metadata = AboutMetadata {
         name: Some("BurnISO to USB".to_string()),
         version: Some("1.0.0".to_string()),
         copyright: Some("© 2025 Norbert Jander".to_string()),
-        comments: Some("ISO auf USB brennen & USB sichern".to_string()),
+        comments: Some(about_comments.to_string()),
         ..Default::default()
     };
     
     // App-Menü
-    let about = PredefinedMenuItem::about(app_handle, Some("Über BurnISO to USB"), Some(about_metadata))?;
+    let about = PredefinedMenuItem::about(app_handle, Some(about_label), Some(about_metadata))?;
     let separator = PredefinedMenuItem::separator(app_handle)?;
-    let hide = PredefinedMenuItem::hide(app_handle, Some("BurnISO to USB ausblenden"))?;
-    let hide_others = PredefinedMenuItem::hide_others(app_handle, Some("Andere ausblenden"))?;
-    let show_all = PredefinedMenuItem::show_all(app_handle, Some("Alle einblenden"))?;
-    let quit = PredefinedMenuItem::quit(app_handle, Some("BurnISO to USB beenden"))?;
+    let hide = PredefinedMenuItem::hide(app_handle, Some(hide_label))?;
+    let hide_others = PredefinedMenuItem::hide_others(app_handle, Some(hide_others_label))?;
+    let show_all = PredefinedMenuItem::show_all(app_handle, Some(show_all_label))?;
+    let quit = PredefinedMenuItem::quit(app_handle, Some(quit_label))?;
     
     let app_menu = Submenu::with_items(
         app_handle,
@@ -564,14 +590,14 @@ fn build_menu(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> 
     )?;
     
     // Ablage-Menü
-    let select_iso = MenuItem::with_id(app_handle, "select_iso", "ISO-Datei öffnen...", true, Some("CmdOrCtrl+O"))?;
-    let select_destination = MenuItem::with_id(app_handle, "select_destination", "Speicherort wählen...", true, Some("CmdOrCtrl+S"))?;
-    let refresh = MenuItem::with_id(app_handle, "refresh", "USB-Geräte aktualisieren", true, Some("CmdOrCtrl+R"))?;
-    let close = PredefinedMenuItem::close_window(app_handle, Some("Fenster schließen"))?;
+    let select_iso = MenuItem::with_id(app_handle, "select_iso", select_iso_label, true, Some("CmdOrCtrl+O"))?;
+    let select_destination = MenuItem::with_id(app_handle, "select_destination", select_destination_label, true, Some("CmdOrCtrl+S"))?;
+    let refresh = MenuItem::with_id(app_handle, "refresh", refresh_label, true, Some("CmdOrCtrl+R"))?;
+    let close = PredefinedMenuItem::close_window(app_handle, Some(close_label))?;
     
     let file_menu = Submenu::with_items(
         app_handle,
-        "Ablage",
+        file_menu_label,
         true,
         &[&select_iso, &select_destination, &PredefinedMenuItem::separator(app_handle)?, &refresh, &PredefinedMenuItem::separator(app_handle)?, &close],
     )?;
@@ -579,36 +605,38 @@ fn build_menu(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> 
     // Aktion-Menü
     let tab_burn = MenuItem::with_id(app_handle, "tab_burn", "ISO → USB", true, Some("CmdOrCtrl+1"))?;
     let tab_backup = MenuItem::with_id(app_handle, "tab_backup", "USB → ISO", true, Some("CmdOrCtrl+2"))?;
-    let start_burn = MenuItem::with_id(app_handle, "start_burn", "ISO auf USB brennen", true, Some("CmdOrCtrl+B"))?;
-    let start_backup = MenuItem::with_id(app_handle, "start_backup", "USB sichern", true, Some("CmdOrCtrl+Shift+B"))?;
-    let cancel_action = MenuItem::with_id(app_handle, "cancel_action", "Vorgang abbrechen", true, Some("CmdOrCtrl+."))?;
+    let start_burn = MenuItem::with_id(app_handle, "start_burn", start_burn_label, true, Some("CmdOrCtrl+B"))?;
+    let start_backup = MenuItem::with_id(app_handle, "start_backup", start_backup_label, true, Some("CmdOrCtrl+Shift+B"))?;
+    let cancel_action = MenuItem::with_id(app_handle, "cancel_action", cancel_label, true, Some("CmdOrCtrl+."))?;
     
     let action_menu = Submenu::with_items(
         app_handle,
-        "Aktion",
+        action_menu_label,
         true,
         &[&tab_burn, &tab_backup, &PredefinedMenuItem::separator(app_handle)?, &start_burn, &start_backup, &PredefinedMenuItem::separator(app_handle)?, &cancel_action],
     )?;
     
     // Fenster-Menü
-    let minimize = PredefinedMenuItem::minimize(app_handle, Some("Im Dock ablegen"))?;
-    let fullscreen = PredefinedMenuItem::fullscreen(app_handle, Some("Vollbild"))?;
+    let minimize = PredefinedMenuItem::minimize(app_handle, Some(minimize_label))?;
+    let fullscreen = PredefinedMenuItem::fullscreen(app_handle, Some(fullscreen_label))?;
     
     let window_menu = Submenu::with_items(
         app_handle,
-        "Fenster",
+        window_menu_label,
         true,
         &[&minimize, &fullscreen],
     )?;
     
     // Hilfe-Menü
     let github = MenuItem::with_id(app_handle, "github", "GitHub Repository", true, None::<&str>)?;
+    let lang_german = MenuItem::with_id(app_handle, "lang_de", "🇩🇪 Deutsch", true, None::<&str>)?;
+    let lang_english = MenuItem::with_id(app_handle, "lang_en", "🇬🇧 English", true, None::<&str>)?;
     
     let help_menu = Submenu::with_items(
         app_handle,
-        "Hilfe",
+        help_menu_label,
         true,
-        &[&github],
+        &[&github, &PredefinedMenuItem::separator(app_handle)?, &lang_german, &lang_english],
     )?;
     
     let menu = Menu::with_items(
@@ -619,6 +647,11 @@ fn build_menu(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> 
     app_handle.set_menu(menu)?;
     
     Ok(())
+}
+
+#[tauri::command]
+fn set_menu_language(app_handle: AppHandle, lang: String) -> Result<(), String> {
+    build_menu(&app_handle, &lang).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -636,7 +669,8 @@ pub fn run() {
             cancel_burn,
             cancel_backup,
             get_window_state,
-            save_window_state
+            save_window_state,
+            set_menu_language
         ])
         .setup(|app| {
             let app_handle = app.handle();
@@ -653,10 +687,11 @@ pub fn run() {
                 }
             }
             
-            // Menü erstellen
-            build_menu(app_handle)?;
+            // Menü erstellen (Deutsch als Standard)
+            build_menu(app_handle, "de")?;
             
             // Menü-Events
+            let app_handle_clone = app_handle.clone();
             app.on_menu_event(move |app, event| {
                 let id = event.id().as_ref();
                 if let Some(window) = app.get_webview_window("main") {
@@ -669,6 +704,14 @@ pub fn run() {
                         "start_burn" => { let _ = window.emit("menu-action", "start_burn"); }
                         "start_backup" => { let _ = window.emit("menu-action", "start_backup"); }
                         "cancel_action" => { let _ = window.emit("menu-action", "cancel_action"); }
+                        "lang_de" => {
+                            let _ = build_menu(&app_handle_clone, "de");
+                            let _ = window.emit("menu-action", "lang_de");
+                        }
+                        "lang_en" => {
+                            let _ = build_menu(&app_handle_clone, "en");
+                            let _ = window.emit("menu-action", "lang_en");
+                        }
                         "github" => {
                             let _ = Command::new("open")
                                 .arg("https://github.com/nojan01/burniso-tauri")
