@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem, AboutMetadata};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DiskInfo {
@@ -536,6 +537,90 @@ async fn backup_usb_filesystem(app: AppHandle, mount_point: String, destination:
     }
 }
 
+// ========== Menu Building ==========
+
+fn build_menu(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let about_metadata = AboutMetadata {
+        name: Some("BurnISO to USB".to_string()),
+        version: Some("1.0.0".to_string()),
+        copyright: Some("© 2025 Norbert Jander".to_string()),
+        comments: Some("ISO auf USB brennen & USB sichern".to_string()),
+        ..Default::default()
+    };
+    
+    // App-Menü
+    let about = PredefinedMenuItem::about(app_handle, Some("Über BurnISO to USB"), Some(about_metadata))?;
+    let separator = PredefinedMenuItem::separator(app_handle)?;
+    let hide = PredefinedMenuItem::hide(app_handle, Some("BurnISO to USB ausblenden"))?;
+    let hide_others = PredefinedMenuItem::hide_others(app_handle, Some("Andere ausblenden"))?;
+    let show_all = PredefinedMenuItem::show_all(app_handle, Some("Alle einblenden"))?;
+    let quit = PredefinedMenuItem::quit(app_handle, Some("BurnISO to USB beenden"))?;
+    
+    let app_menu = Submenu::with_items(
+        app_handle,
+        "BurnISO to USB",
+        true,
+        &[&about, &separator, &hide, &hide_others, &show_all, &PredefinedMenuItem::separator(app_handle)?, &quit],
+    )?;
+    
+    // Ablage-Menü
+    let select_iso = MenuItem::with_id(app_handle, "select_iso", "ISO-Datei öffnen...", true, Some("CmdOrCtrl+O"))?;
+    let select_destination = MenuItem::with_id(app_handle, "select_destination", "Speicherort wählen...", true, Some("CmdOrCtrl+S"))?;
+    let refresh = MenuItem::with_id(app_handle, "refresh", "USB-Geräte aktualisieren", true, Some("CmdOrCtrl+R"))?;
+    let close = PredefinedMenuItem::close_window(app_handle, Some("Fenster schließen"))?;
+    
+    let file_menu = Submenu::with_items(
+        app_handle,
+        "Ablage",
+        true,
+        &[&select_iso, &select_destination, &PredefinedMenuItem::separator(app_handle)?, &refresh, &PredefinedMenuItem::separator(app_handle)?, &close],
+    )?;
+    
+    // Aktion-Menü
+    let tab_burn = MenuItem::with_id(app_handle, "tab_burn", "ISO → USB", true, Some("CmdOrCtrl+1"))?;
+    let tab_backup = MenuItem::with_id(app_handle, "tab_backup", "USB → ISO", true, Some("CmdOrCtrl+2"))?;
+    let start_burn = MenuItem::with_id(app_handle, "start_burn", "ISO auf USB brennen", true, Some("CmdOrCtrl+B"))?;
+    let start_backup = MenuItem::with_id(app_handle, "start_backup", "USB sichern", true, Some("CmdOrCtrl+Shift+B"))?;
+    let cancel_action = MenuItem::with_id(app_handle, "cancel_action", "Vorgang abbrechen", true, Some("CmdOrCtrl+."))?;
+    
+    let action_menu = Submenu::with_items(
+        app_handle,
+        "Aktion",
+        true,
+        &[&tab_burn, &tab_backup, &PredefinedMenuItem::separator(app_handle)?, &start_burn, &start_backup, &PredefinedMenuItem::separator(app_handle)?, &cancel_action],
+    )?;
+    
+    // Fenster-Menü
+    let minimize = PredefinedMenuItem::minimize(app_handle, Some("Im Dock ablegen"))?;
+    let fullscreen = PredefinedMenuItem::fullscreen(app_handle, Some("Vollbild"))?;
+    
+    let window_menu = Submenu::with_items(
+        app_handle,
+        "Fenster",
+        true,
+        &[&minimize, &fullscreen],
+    )?;
+    
+    // Hilfe-Menü
+    let github = MenuItem::with_id(app_handle, "github", "GitHub Repository", true, None::<&str>)?;
+    
+    let help_menu = Submenu::with_items(
+        app_handle,
+        "Hilfe",
+        true,
+        &[&github],
+    )?;
+    
+    let menu = Menu::with_items(
+        app_handle,
+        &[&app_menu, &file_menu, &action_menu, &window_menu, &help_menu],
+    )?;
+    
+    app_handle.set_menu(menu)?;
+    
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -554,6 +639,9 @@ pub fn run() {
             save_window_state
         ])
         .setup(|app| {
+            let app_handle = app.handle();
+            
+            // Fensterposition wiederherstellen
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(state) = get_window_state() {
                     if state.width >= 700 && state.height >= 700 {
@@ -564,6 +652,33 @@ pub fn run() {
                     }
                 }
             }
+            
+            // Menü erstellen
+            build_menu(app_handle)?;
+            
+            // Menü-Events
+            app.on_menu_event(move |app, event| {
+                let id = event.id().as_ref();
+                if let Some(window) = app.get_webview_window("main") {
+                    match id {
+                        "refresh" => { let _ = window.emit("menu-action", "refresh"); }
+                        "select_iso" => { let _ = window.emit("menu-action", "select_iso"); }
+                        "select_destination" => { let _ = window.emit("menu-action", "select_destination"); }
+                        "tab_burn" => { let _ = window.emit("menu-action", "tab_burn"); }
+                        "tab_backup" => { let _ = window.emit("menu-action", "tab_backup"); }
+                        "start_burn" => { let _ = window.emit("menu-action", "start_burn"); }
+                        "start_backup" => { let _ = window.emit("menu-action", "start_backup"); }
+                        "cancel_action" => { let _ = window.emit("menu-action", "cancel_action"); }
+                        "github" => {
+                            let _ = Command::new("open")
+                                .arg("https://github.com/nojan01/burniso-tauri")
+                                .spawn();
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            
             Ok(())
         })
         .run(tauri::generate_context!())

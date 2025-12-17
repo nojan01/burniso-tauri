@@ -610,6 +610,39 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Listen for menu events
+  listen('menu-action', function(event) {
+    const action = event.payload;
+    switch (action) {
+      case 'refresh':
+        loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
+        loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
+        break;
+      case 'select_iso':
+        selectIsoBtn.click();
+        break;
+      case 'select_destination':
+        selectDestinationBtn.click();
+        break;
+      case 'tab_burn':
+        document.querySelector('[data-tab="burn"]').click();
+        break;
+      case 'tab_backup':
+        document.querySelector('[data-tab="backup"]').click();
+        break;
+      case 'start_burn':
+        if (!burnBtn.disabled) burnBtn.click();
+        break;
+      case 'start_backup':
+        if (!backupBtn.disabled) backupBtn.click();
+        break;
+      case 'cancel_action':
+        if (!cancelBurnBtn.disabled) cancelBurnBtn.click();
+        if (!cancelBackupBtn.disabled) cancelBackupBtn.click();
+        break;
+    }
+  });
+
   // Window state persistence - save position and size
   async function saveWindowState() {
     try {
