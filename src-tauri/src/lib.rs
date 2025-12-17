@@ -74,30 +74,6 @@ fn save_window_state(width: u32, height: u32, x: i32, y: i32) -> Result<(), Stri
 static CANCEL_BURN: AtomicBool = AtomicBool::new(false);
 static CANCEL_BACKUP: AtomicBool = AtomicBool::new(false);
 
-fn request_admin_password(prompt: &str) -> Result<String, String> {
-    let script = format!(
-        r#"display dialog "{}" default answer "" with hidden answer with title "Administrator-Passwort" buttons {{"Abbrechen", "OK"}} default button "OK"
-        if button returned of result is "OK" then
-            return text returned of result
-        else
-            error "Abgebrochen"
-        end if"#,
-        prompt
-    );
-    let output = Command::new("osascript").arg("-e").arg(&script).output()
-        .map_err(|e| format!("osascript Fehler: {}", e))?;
-    if output.status.success() {
-        let password = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if password.is_empty() {
-            Err("Kein Passwort eingegeben".to_string())
-        } else {
-            Ok(password)
-        }
-    } else {
-        Err("Passwortabfrage abgebrochen".to_string())
-    }
-}
-
 #[tauri::command]
 fn list_disks() -> Result<Vec<DiskInfo>, String> {
     // "external physical" zeigt nur echte physische externe Geräte (keine Disk-Images)
@@ -196,33 +172,53 @@ fn get_disk_info(disk_id: String) -> Result<String, String> {
 #[tauri::command]
 fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
     let supported_fs = ["APFS", "Apple_APFS", "HFS+", "Mac OS Extended", "FAT32", "ExFAT", "Apple_HFS"];
+    let iso_fs = ["ISO 9660", "cd9660", "ISO9660", "ISO", "UDF"];
+    
+    // Hilfsfunktion um Partition/Disk zu prüfen
+    let check_disk = |part_id: &str| -> Option<VolumeInfo> {
+        let o = Command::new("diskutil").args(["info", "-plist", part_id]).output().ok()?;
+        let plist = String::from_utf8_lossy(&o.stdout);
+        let mount = extract_plist_string(&plist, "MountPoint");
+        let fs = extract_plist_string(&plist, "FilesystemName")
+            .or_else(|| extract_plist_string(&plist, "FilesystemUserVisibleName"))
+            .or_else(|| extract_plist_string(&plist, "Content")).unwrap_or_default();
+        
+        if let Some(ref mp) = mount {
+            if !mp.is_empty() && std::path::Path::new(mp).exists() {
+                let is_iso = iso_fs.iter().any(|s| fs.contains(s));
+                if is_iso || supported_fs.iter().any(|s| fs.contains(s)) {
+                    let display_fs = if is_iso { format!("ISO:{}", fs) } else { fs };
+                    return Some(VolumeInfo {
+                        identifier: part_id.to_string(),
+                        mount_point: mp.clone(),
+                        filesystem: display_fs,
+                        name: extract_plist_string(&plist, "VolumeName").unwrap_or_else(|| "USB-Volume".to_string()),
+                        bytes: extract_plist_value(&plist, "TotalSize"),
+                    });
+                }
+            }
+        }
+        None
+    };
+    
+    // Zuerst Partitionen prüfen (diskXsY)
     let output = Command::new("diskutil").args(["list", &disk_id]).output()
         .map_err(|e| format!("diskutil Fehler: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         if let Some(caps) = regex_lite::Regex::new(r"(disk\d+s\d+)").ok().and_then(|re| re.captures(line)) {
             let part_id = caps.get(1).unwrap().as_str();
-            if let Some(o) = Command::new("diskutil").args(["info", "-plist", part_id]).output().ok() {
-                let plist = String::from_utf8_lossy(&o.stdout);
-                let mount = extract_plist_string(&plist, "MountPoint");
-                let fs = extract_plist_string(&plist, "FilesystemName")
-                    .or_else(|| extract_plist_string(&plist, "Content")).unwrap_or_default();
-                if let Some(ref mp) = mount {
-                    if !mp.is_empty() && std::path::Path::new(mp).exists() {
-                        if supported_fs.iter().any(|s| fs.contains(s)) {
-                            return Ok(Some(VolumeInfo {
-                                identifier: part_id.to_string(),
-                                mount_point: mp.clone(),
-                                filesystem: fs,
-                                name: extract_plist_string(&plist, "VolumeName").unwrap_or_else(|| "USB-Volume".to_string()),
-                                bytes: extract_plist_value(&plist, "TotalSize"),
-                            }));
-                        }
-                    }
-                }
+            if let Some(info) = check_disk(part_id) {
+                return Ok(Some(info));
             }
         }
     }
+    
+    // Falls keine Partition gefunden, die Hauptdisk selbst prüfen (für ISOs ohne Partitionstabelle)
+    if let Some(info) = check_disk(&disk_id) {
+        return Ok(Some(info));
+    }
+    
     Ok(None)
 }
 
@@ -245,9 +241,8 @@ fn emit_progress(app: &AppHandle, percent: u32, status: &str, operation: &str) {
 }
 
 #[tauri::command]
-async fn burn_iso(app: AppHandle, iso_path: String, disk_id: String, verify: bool, eject: bool) -> Result<String, String> {
+async fn burn_iso(app: AppHandle, iso_path: String, disk_id: String, password: String, verify: bool, eject: bool) -> Result<String, String> {
     CANCEL_BURN.store(false, Ordering::SeqCst);
-    let password = request_admin_password("Zum Schreiben auf den USB-Stick werden Administrator-Rechte benötigt.\\n\\nBitte geben Sie Ihr macOS-Passwort ein:")?;
     let iso_size = std::fs::metadata(&iso_path).map_err(|e| format!("ISO nicht gefunden: {}", e))?.len();
     
     let _ = app.emit("burn_phase", "writing");
@@ -302,8 +297,8 @@ print("WRITE_SUCCESS", flush=True)"#, iso_path.replace('"', r#"\""#), rdisk_path
             let _ = child.kill();
             return Err("Brennvorgang abgebrochen".to_string());
         }
-        if line.starts_with("BYTES:") {
-            if let Ok(bytes) = line[6..].parse::<u64>() {
+        if let Some(stripped) = line.strip_prefix("BYTES:") {
+            if let Ok(bytes) = stripped.parse::<u64>() {
                 let percent = ((bytes as f64 / iso_size as f64) * 100.0) as u32;
                 emit_progress(&app, percent.min(100), &format!("SCHREIBEN: {}%", percent.min(100)), "burn");
             }
@@ -321,6 +316,18 @@ print("WRITE_SUCCESS", flush=True)"#, iso_path.replace('"', r#"\""#), rdisk_path
     
     if verify {
         let _ = app.emit("burn_phase", "verifying");
+        emit_progress(&app, 0, "Synchronisiere Daten...", "burn");
+        
+        // Wichtig: Cache leeren und Disk neu einbinden für zuverlässige Verifizierung
+        let _ = Command::new("sync").output();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        
+        // Disk kurz einhängen und wieder aushängen, um gepufferte Daten zu schreiben
+        let _ = Command::new("diskutil").args(["mountDisk", &disk_path]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = Command::new("diskutil").args(["unmountDisk", &disk_path]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        
         emit_progress(&app, 0, "VERIFIZIEREN: 0%", "burn");
         
         let verify_script = format!(
@@ -371,8 +378,8 @@ else:
                 let _ = verify_child.kill();
                 return Err("Verifizierung abgebrochen".to_string());
             }
-            if line.starts_with("VERIFY:") {
-                let parts: Vec<&str> = line[7..].split(':').collect();
+            if let Some(stripped) = line.strip_prefix("VERIFY:") {
+                let parts: Vec<&str> = stripped.split(':').collect();
                 if let (Some(bytes_str), Some(err_str)) = (parts.first(), parts.get(1)) {
                     if let (Ok(bytes), Ok(errs)) = (bytes_str.parse::<u64>(), err_str.parse::<u32>()) {
                         let percent = ((bytes as f64 / iso_size as f64) * 100.0) as u32;
@@ -386,8 +393,8 @@ else:
                 }
             } else if line.contains("VERIFY_SUCCESS") {
                 verify_success = true;
-            } else if line.starts_with("VERIFY_FAILED:") {
-                verify_errors = line[14..].parse().unwrap_or(1);
+            } else if let Some(stripped) = line.strip_prefix("VERIFY_FAILED:") {
+                verify_errors = stripped.parse().unwrap_or(1);
             }
         }
         
@@ -420,9 +427,8 @@ else:
 }
 
 #[tauri::command]
-async fn backup_usb_raw(app: AppHandle, disk_id: String, destination: String, disk_size: u64) -> Result<String, String> {
+async fn backup_usb_raw(app: AppHandle, disk_id: String, destination: String, disk_size: u64, password: String) -> Result<String, String> {
     CANCEL_BACKUP.store(false, Ordering::SeqCst);
-    let password = request_admin_password("Zum Lesen des USB-Sticks werden Administrator-Rechte benötigt.\\n\\nBitte geben Sie Ihr macOS-Passwort ein:")?;
     let disk_path = format!("/dev/{}", disk_id);
     let rdisk_path = format!("/dev/r{}", disk_id);
     emit_progress(&app, 0, "Unmount Disk...", "backup");
@@ -443,13 +449,15 @@ except OSError as exc:
     sys.exit(1)
 try:
     with os.fdopen(fd, 'rb', buffering=0) as src, open(out_path, 'wb') as dst:
-        while True:
-            chunk = src.read(buffer_size)
+        remaining = total_size
+        while remaining > 0:
+            to_read = min(buffer_size, remaining)
+            chunk = src.read(to_read)
             if not chunk: break
             dst.write(chunk)
             copied += len(chunk)
-            progress = min(copied, total_size) if total_size else copied
-            print(f"BYTES:{{progress}}", flush=True)
+            remaining -= len(chunk)
+            print(f"BYTES:{{copied}}", flush=True)
         dst.flush()
         os.fsync(dst.fileno())
 except OSError as exc:
@@ -473,8 +481,8 @@ print("SUCCESS", flush=True)"#, rdisk_path, destination.replace('"', r#"\""#), d
             let _ = child.kill();
             return Err("Sicherung abgebrochen".to_string());
         }
-        if line.starts_with("BYTES:") {
-            if let Ok(bytes) = line[6..].parse::<u64>() {
+        if let Some(stripped) = line.strip_prefix("BYTES:") {
+            if let Ok(bytes) = stripped.parse::<u64>() {
                 let percent = ((bytes as f64 / disk_size as f64) * 100.0) as u32;
                 emit_progress(&app, percent.min(100), &format!("{}% gesichert", percent), "backup");
             }
@@ -511,8 +519,8 @@ async fn backup_usb_filesystem(app: AppHandle, mount_point: String, destination:
             let _ = child.kill();
             return Err("Sicherung abgebrochen".to_string());
         }
-        if line.starts_with("PERCENT:") {
-            if let Ok(percent) = line[8..].trim().parse::<f64>() {
+        if let Some(stripped) = line.strip_prefix("PERCENT:") {
+            if let Ok(percent) = stripped.trim().parse::<f64>() {
                 emit_progress(&app, percent as u32, &format!("{}% erstellt", percent as u32), "backup");
             }
         }
