@@ -251,23 +251,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  // ===== DRAG & DROP FOR ISO FILES =====
+  // ===== DRAG & DROP FOR ISO FILES (Tauri 2) =====
   const dropOverlay = document.getElementById('drop-overlay');
   const container = document.querySelector('.container');
-  const fileInputRow = document.querySelector('.file-input-row');
-  let dragCounter = 0;
-
-  // Helper function to check if drag contains files
-  function containsFiles(event) {
-    if (event.dataTransfer.types) {
-      for (let i = 0; i < event.dataTransfer.types.length; i++) {
-        if (event.dataTransfer.types[i] === 'Files') {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
 
   // Helper to set ISO file from path
   function setIsoFile(path) {
@@ -287,52 +273,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     return false;
   }
 
-  // Prevent default drag behaviors on window
-  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-    document.body.addEventListener(eventName, (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    }, false);
+  // Listen for Tauri's drag-drop events
+  listen('tauri://drag-enter', (event) => {
+    dropOverlay.classList.remove('hidden');
+    container.classList.add('drag-over');
   });
 
-  // Drag enter - show overlay
-  document.body.addEventListener('dragenter', (e) => {
-    if (!containsFiles(e)) return;
-    dragCounter++;
-    if (dragCounter === 1) {
-      dropOverlay.classList.remove('hidden');
-      container.classList.add('drag-over');
-    }
+  listen('tauri://drag-leave', (event) => {
+    dropOverlay.classList.add('hidden');
+    container.classList.remove('drag-over');
   });
 
-  // Drag leave - hide overlay when leaving window
-  document.body.addEventListener('dragleave', (e) => {
-    dragCounter--;
-    if (dragCounter === 0) {
-      dropOverlay.classList.add('hidden');
-      container.classList.remove('drag-over');
-    }
-  });
-
-  // Drop - handle the file
-  document.body.addEventListener('drop', async (e) => {
-    dragCounter = 0;
+  listen('tauri://drag-drop', (event) => {
     dropOverlay.classList.add('hidden');
     container.classList.remove('drag-over');
     
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      const file = files[0];
-      // In Tauri, we need to get the file path
-      // The File object has a path property in Tauri
-      const filePath = file.path || file.name;
-      
-      if (filePath) {
-        if (setIsoFile(filePath)) {
-          logBurn('✓ ISO file dropped: ' + file.name, 'success');
-        } else {
-          logBurn('⚠ Only .iso and .img files are supported', 'warning');
-        }
+    // event.payload contains the paths array
+    const paths = event.payload.paths || event.payload;
+    if (paths && paths.length > 0) {
+      const filePath = paths[0];
+      if (setIsoFile(filePath)) {
+        logBurn('✓ ISO file dropped: ' + filePath.split('/').pop(), 'success');
+      } else {
+        logBurn('⚠ Only .iso and .img files are supported', 'warning');
       }
     }
   });
