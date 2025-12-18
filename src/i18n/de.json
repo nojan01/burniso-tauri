@@ -69,9 +69,7 @@
     "complete": "Abgeschlossen",
     "cancelled": "Abgebrochen",
     "error": "Fehler",
-    "success": "Erfolgreich",
-    "macOsDiskWarningTitle": "Hinweis",
-    "macOsDiskWarning": "macOS zeigt möglicherweise die Meldung 'Das Medium konnte nicht gelesen werden'. Das ist normal bei bootfähigen USB-Sticks - klicken Sie einfach auf 'Ignorieren'. Der USB-Stick wurde erfolgreich beschrieben."
+    "success": "Erfolgreich"
   },
   "menu": {
     "about": "Über BurnISO to USB",

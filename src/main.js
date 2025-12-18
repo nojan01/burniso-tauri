@@ -417,13 +417,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       burnPhase.textContent = doVerify ? '✓ Written and verified!' : '✓ Successfully written!';
       burnPhase.className = 'phase-text success';
       
-      // Show macOS disk warning dialog
-      const { message } = window.__TAURI__.dialog;
-      await message(window.i18n.t('messages.macOsDiskWarning'), {
-        title: window.i18n.t('messages.macOsDiskWarningTitle'),
-        kind: 'info'
-      });
-      
       isBurning = false;
       burnBtn.disabled = false;
       cancelBurnBtn.disabled = true;

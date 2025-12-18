@@ -69,9 +69,7 @@
     "complete": "Complete",
     "cancelled": "Cancelled",
     "error": "Error",
-    "success": "Success",
-    "macOsDiskWarningTitle": "Note",
-    "macOsDiskWarning": "macOS may display a message 'The disk could not be read'. This is normal for bootable USB drives - simply click 'Ignore'. The USB drive was written successfully."
+    "success": "Success"
   },
   "menu": {
     "about": "About BurnISO to USB",

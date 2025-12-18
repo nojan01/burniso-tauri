@@ -1,7 +1,7 @@
 // burnISOtoUSB - Tauri Backend
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +30,297 @@ pub struct ProgressEvent {
     pub percent: u32,
     pub status: String,
     pub operation: String,
+}
+
+/// Detected filesystem information from raw device reading
+#[derive(Debug, Clone)]
+struct DetectedFilesystem {
+    name: String,
+    label: Option<String>,
+    used_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+}
+
+/// Detect filesystem by reading raw device signatures
+/// This works even for filesystems macOS doesn't natively support
+fn detect_filesystem_from_device(disk_id: &str) -> Option<DetectedFilesystem> {
+    let device_path = format!("/dev/r{}", disk_id); // Use raw device for direct access
+    
+    let mut file = File::open(&device_path).ok()?;
+    let mut buffer = vec![0u8; 131072]; // 128KB buffer for various superblocks
+    
+    file.read_exact(&mut buffer).ok()?;
+    
+    // Check for various filesystem signatures
+    
+    // 1. NTFS: "NTFS    " at offset 3
+    if buffer.len() > 10 && &buffer[3..11] == b"NTFS    " {
+        let label = extract_ntfs_label(&buffer);
+        let (total, used) = extract_ntfs_size(&buffer);
+        return Some(DetectedFilesystem {
+            name: "NTFS".to_string(),
+            label,
+            used_bytes: used,
+            total_bytes: total,
+        });
+    }
+    
+    // 2. EXT2/3/4: Magic number 0xEF53 at offset 1080 (0x438)
+    if buffer.len() > 1082 && buffer[0x438] == 0x53 && buffer[0x439] == 0xEF {
+        let (fs_type, label, total, used) = extract_ext_info(&buffer);
+        return Some(DetectedFilesystem {
+            name: fs_type,
+            label,
+            used_bytes: used,
+            total_bytes: total,
+        });
+    }
+    
+    // 3. FAT32: "FAT32   " at offset 82
+    if buffer.len() > 90 && &buffer[82..90] == b"FAT32   " {
+        let label = extract_fat_label(&buffer, 71);
+        return Some(DetectedFilesystem {
+            name: "FAT32".to_string(),
+            label,
+            used_bytes: None,
+            total_bytes: None,
+        });
+    }
+    
+    // 4. FAT16: "FAT16   " or "FAT12   " at offset 54
+    if buffer.len() > 62 {
+        if &buffer[54..62] == b"FAT16   " {
+            let label = extract_fat_label(&buffer, 43);
+            return Some(DetectedFilesystem {
+                name: "FAT16".to_string(),
+                label,
+                used_bytes: None,
+                total_bytes: None,
+            });
+        }
+        if &buffer[54..62] == b"FAT12   " {
+            let label = extract_fat_label(&buffer, 43);
+            return Some(DetectedFilesystem {
+                name: "FAT12".to_string(),
+                label,
+                used_bytes: None,
+                total_bytes: None,
+            });
+        }
+    }
+    
+    // 5. exFAT: "EXFAT   " at offset 3
+    if buffer.len() > 11 && &buffer[3..11] == b"EXFAT   " {
+        return Some(DetectedFilesystem {
+            name: "exFAT".to_string(),
+            label: None,
+            used_bytes: None,
+            total_bytes: None,
+        });
+    }
+    
+    // 6. ISO 9660: "CD001" at offset 32769 (0x8001) - need to read more
+    if let Ok(mut f) = File::open(&device_path) {
+        let mut iso_buf = vec![0u8; 6];
+        if f.seek(SeekFrom::Start(0x8001)).is_ok() && f.read_exact(&mut iso_buf).is_ok() {
+            if &iso_buf[0..5] == b"CD001" {
+                return Some(DetectedFilesystem {
+                    name: "ISO 9660".to_string(),
+                    label: extract_iso_label(&device_path),
+                    used_bytes: None,
+                    total_bytes: None,
+                });
+            }
+        }
+    }
+    
+    // 7. Btrfs: "_BHRfS_M" at offset 0x10040
+    if let Ok(mut f) = File::open(&device_path) {
+        let mut btrfs_buf = vec![0u8; 8];
+        if f.seek(SeekFrom::Start(0x10040)).is_ok() && f.read_exact(&mut btrfs_buf).is_ok() {
+            if &btrfs_buf == b"_BHRfS_M" {
+                return Some(DetectedFilesystem {
+                    name: "Btrfs".to_string(),
+                    label: None,
+                    used_bytes: None,
+                    total_bytes: None,
+                });
+            }
+        }
+    }
+    
+    // 8. XFS: "XFSB" at offset 0
+    if buffer.len() > 4 && &buffer[0..4] == b"XFSB" {
+        return Some(DetectedFilesystem {
+            name: "XFS".to_string(),
+            label: extract_xfs_label(&buffer),
+            used_bytes: None,
+            total_bytes: None,
+        });
+    }
+    
+    None
+}
+
+fn extract_ntfs_label(_buffer: &[u8]) -> Option<String> {
+    // NTFS volume label is in the $Volume file, not easily accessible from boot sector
+    // We'd need to parse the MFT which is complex - return None for now
+    None
+}
+
+fn extract_ntfs_size(buffer: &[u8]) -> (Option<u64>, Option<u64>) {
+    if buffer.len() < 0x30 {
+        return (None, None);
+    }
+    // Bytes per sector at offset 0x0B (2 bytes, little-endian)
+    let bytes_per_sector = u16::from_le_bytes([buffer[0x0B], buffer[0x0C]]) as u64;
+    // Sectors per cluster at offset 0x0D (1 byte) - not needed for total size calc
+    let _sectors_per_cluster = buffer[0x0D] as u64;
+    // Total sectors at offset 0x28 (8 bytes, little-endian)
+    let total_sectors = u64::from_le_bytes([
+        buffer[0x28], buffer[0x29], buffer[0x2A], buffer[0x2B],
+        buffer[0x2C], buffer[0x2D], buffer[0x2E], buffer[0x2F],
+    ]);
+    
+    let total_bytes = total_sectors * bytes_per_sector;
+    // Used bytes would require reading $Bitmap - return None
+    (Some(total_bytes), None)
+}
+
+fn extract_ext_info(buffer: &[u8]) -> (String, Option<String>, Option<u64>, Option<u64>) {
+    let superblock_offset = 0x400; // 1024 bytes
+    
+    // Determine EXT version from feature flags
+    let fs_type = if buffer.len() > superblock_offset + 0x60 {
+        let incompat_features = u32::from_le_bytes([
+            buffer[superblock_offset + 0x60],
+            buffer[superblock_offset + 0x61],
+            buffer[superblock_offset + 0x62],
+            buffer[superblock_offset + 0x63],
+        ]);
+        // INCOMPAT_EXTENTS = 0x40 indicates EXT4
+        if incompat_features & 0x40 != 0 {
+            "EXT4"
+        } else if buffer.len() > superblock_offset + 0xE0 {
+            // Check for journal (EXT3)
+            let compat_features = u32::from_le_bytes([
+                buffer[superblock_offset + 0x5C],
+                buffer[superblock_offset + 0x5D],
+                buffer[superblock_offset + 0x5E],
+                buffer[superblock_offset + 0x5F],
+            ]);
+            if compat_features & 0x04 != 0 { "EXT3" } else { "EXT2" }
+        } else {
+            "EXT2"
+        }
+    } else {
+        "EXT"
+    };
+    
+    // Extract volume label (16 bytes at offset 0x78 in superblock)
+    let label = if buffer.len() > superblock_offset + 0x88 {
+        let label_bytes = &buffer[superblock_offset + 0x78..superblock_offset + 0x88];
+        let label_str: String = label_bytes.iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as char)
+            .collect();
+        if label_str.is_empty() { None } else { Some(label_str) }
+    } else {
+        None
+    };
+    
+    // Calculate size
+    let (total, used) = if buffer.len() > superblock_offset + 0x28 {
+        let block_count = u32::from_le_bytes([
+            buffer[superblock_offset + 0x04],
+            buffer[superblock_offset + 0x05],
+            buffer[superblock_offset + 0x06],
+            buffer[superblock_offset + 0x07],
+        ]) as u64;
+        let free_blocks = u32::from_le_bytes([
+            buffer[superblock_offset + 0x0C],
+            buffer[superblock_offset + 0x0D],
+            buffer[superblock_offset + 0x0E],
+            buffer[superblock_offset + 0x0F],
+        ]) as u64;
+        let log_block_size = u32::from_le_bytes([
+            buffer[superblock_offset + 0x18],
+            buffer[superblock_offset + 0x19],
+            buffer[superblock_offset + 0x1A],
+            buffer[superblock_offset + 0x1B],
+        ]);
+        let block_size = 1024u64 << log_block_size;
+        
+        let total_bytes = block_count * block_size;
+        let used_bytes = (block_count - free_blocks) * block_size;
+        (Some(total_bytes), Some(used_bytes))
+    } else {
+        (None, None)
+    };
+    
+    (fs_type.to_string(), label, total, used)
+}
+
+fn extract_fat_label(buffer: &[u8], offset: usize) -> Option<String> {
+    if buffer.len() > offset + 11 {
+        let label_bytes = &buffer[offset..offset + 11];
+        let label: String = label_bytes.iter()
+            .map(|&b| b as char)
+            .collect::<String>()
+            .trim()
+            .to_string();
+        if label.is_empty() || label == "NO NAME" { None } else { Some(label) }
+    } else {
+        None
+    }
+}
+
+fn extract_iso_label(device_path: &str) -> Option<String> {
+    // ISO 9660 volume label is at offset 32808 (0x8028), 32 bytes
+    let mut file = File::open(device_path).ok()?;
+    file.seek(SeekFrom::Start(0x8028)).ok()?;
+    let mut label_buf = vec![0u8; 32];
+    file.read_exact(&mut label_buf).ok()?;
+    let label: String = label_buf.iter()
+        .map(|&b| b as char)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if label.is_empty() { None } else { Some(label) }
+}
+
+fn extract_xfs_label(buffer: &[u8]) -> Option<String> {
+    // XFS label is at offset 0x6C, 12 bytes
+    if buffer.len() > 0x6C + 12 {
+        let label_bytes = &buffer[0x6C..0x6C + 12];
+        let label: String = label_bytes.iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as char)
+            .collect();
+        if label.is_empty() { None } else { Some(label) }
+    } else {
+        None
+    }
+}
+
+/// Format bytes as human-readable string
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+    
+    if bytes >= TB {
+        format!("{:.2} TB", bytes as f64 / TB as f64)
+    } else if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +466,7 @@ fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
     let supported_fs = ["APFS", "Apple_APFS", "HFS+", "Mac OS Extended", "FAT32", "ExFAT", "Apple_HFS"];
     let iso_fs = ["ISO 9660", "cd9660", "ISO9660", "ISO", "UDF"];
     
-    // Hilfsfunktion um Partition/Disk zu prüfen
+    // Hilfsfunktion um Partition/Disk zu prüfen (macOS-native Erkennung)
     let check_disk = |part_id: &str| -> Option<VolumeInfo> {
         let o = Command::new("diskutil").args(["info", "-plist", part_id]).output().ok()?;
         let plist = String::from_utf8_lossy(&o.stdout);
@@ -202,6 +493,39 @@ fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
         None
     };
     
+    // Hilfsfunktion für raw filesystem detection (für nicht-gemountete Partitionen)
+    let check_disk_raw = |part_id: &str| -> Option<VolumeInfo> {
+        if let Some(detected) = detect_filesystem_from_device(part_id) {
+            // Get size from diskutil even if filesystem is not mounted
+            let o = Command::new("diskutil").args(["info", "-plist", part_id]).output().ok()?;
+            let plist = String::from_utf8_lossy(&o.stdout);
+            let bytes = detected.total_bytes.or_else(|| extract_plist_value(&plist, "TotalSize"));
+            
+            // Build filesystem display string with usage info
+            let fs_display = if let (Some(used), Some(total)) = (detected.used_bytes, detected.total_bytes) {
+                format!("{} ({} / {} belegt)", detected.name, format_bytes(used), format_bytes(total))
+            } else if let Some(total) = detected.total_bytes {
+                format!("{} ({})", detected.name, format_bytes(total))
+            } else {
+                detected.name.clone()
+            };
+            
+            let name = detected.label.unwrap_or_else(|| {
+                extract_plist_string(&plist, "VolumeName")
+                    .unwrap_or_else(|| format!("{} Volume", detected.name))
+            });
+            
+            return Some(VolumeInfo {
+                identifier: part_id.to_string(),
+                mount_point: String::new(), // Not mounted
+                filesystem: fs_display,
+                name,
+                bytes,
+            });
+        }
+        None
+    };
+    
     // Zuerst Partitionen prüfen (diskXsY)
     let output = Command::new("diskutil").args(["list", &disk_id]).output()
         .map_err(|e| format!("diskutil Fehler: {}", e))?;
@@ -209,14 +533,23 @@ fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
     for line in stdout.lines() {
         if let Some(caps) = regex_lite::Regex::new(r"(disk\d+s\d+)").ok().and_then(|re| re.captures(line)) {
             let part_id = caps.get(1).unwrap().as_str();
+            // Try macOS native first
             if let Some(info) = check_disk(part_id) {
+                return Ok(Some(info));
+            }
+            // Then try raw detection for unsupported filesystems
+            if let Some(info) = check_disk_raw(part_id) {
                 return Ok(Some(info));
             }
         }
     }
     
-    // Falls keine Partition gefunden, die Hauptdisk selbst prüfen (für ISOs ohne Partitionstabelle)
+    // Falls keine Partition gefunden, die Hauptdisk selbst prüfen
     if let Some(info) = check_disk(&disk_id) {
+        return Ok(Some(info));
+    }
+    // Try raw detection on main disk
+    if let Some(info) = check_disk_raw(&disk_id) {
         return Ok(Some(info));
     }
     
