@@ -24,6 +24,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   let selectedDiagnoseDisk = null;
   let isDiagnosing = false;
   let diagnoseCancelled = false;
+  
+  // ETA tracking
+  let burnStartTime = null;
+  let backupStartTime = null;
+  let diagnoseStartTime = null;
 
   // Confirm modal elements
   const confirmModal = document.getElementById('confirm-modal');
@@ -145,8 +150,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cancelBurnBtn = document.getElementById('cancel-burn-btn');
   const burnProgressFill = document.getElementById('burn-progress-fill');
   const burnProgressText = document.getElementById('burn-progress-text');
+  const burnEta = document.getElementById('burn-eta');
   const burnPhase = document.getElementById('burn-phase');
   const burnLog = document.getElementById('burn-log');
+  
+  // ETA calculation helper
+  function formatEta(seconds) {
+    if (seconds <= 0 || !isFinite(seconds)) return '';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    const remaining = window.i18n.t('common.remaining') || 'verbleibend';
+    if (mins >= 60) {
+      const hours = Math.floor(mins / 60);
+      const remainingMins = mins % 60;
+      return `~${hours}:${remainingMins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')} ${remaining}`;
+    }
+    return `~${mins}:${secs.toString().padStart(2, '0')} ${remaining}`;
+  }
+  
+  function calculateEta(startTime, percent) {
+    if (!startTime || percent <= 0) return '';
+    const elapsed = (Date.now() - startTime) / 1000; // seconds
+    const remaining = (elapsed / percent) * (100 - percent);
+    return formatEta(remaining);
+  }
 
   // Backup tab elements
   const backupDiskSelect = document.getElementById('backup-disk-select');
@@ -162,6 +189,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cancelBackupBtn = document.getElementById('cancel-backup-btn');
   const backupProgressFill = document.getElementById('backup-progress-fill');
   const backupProgressText = document.getElementById('backup-progress-text');
+  const backupEta = document.getElementById('backup-eta');
   const backupLog = document.getElementById('backup-log');
 
   // Diagnose tab elements
@@ -174,6 +202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cancelDiagnoseBtn = document.getElementById('cancel-diagnose-btn');
   const diagnoseProgressFill = document.getElementById('diagnose-progress-fill');
   const diagnoseProgressText = document.getElementById('diagnose-progress-text');
+  const diagnoseEta = document.getElementById('diagnose-eta');
   const diagnosePhase = document.getElementById('diagnose-phase');
   const statSectorsChecked = document.getElementById('stat-sectors-checked');
   const statErrorsFound = document.getElementById('stat-errors-found');
@@ -325,8 +354,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Reset burn state to initial (silent = no disk reload log)
   function resetBurnState(silent) {
     isBurning = false;
+    burnStartTime = null;
     burnProgressFill.style.width = '0%';
     burnProgressText.textContent = '0%';
+    burnEta.textContent = '';
     burnPhase.textContent = '';
     burnPhase.className = 'phase-text';
     cancelBurnBtn.disabled = true;
@@ -341,8 +372,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Reset backup state to initial
   function resetBackupState(silent) {
     isBackingUp = false;
+    backupStartTime = null;
     backupProgressFill.style.width = '0%';
     backupProgressText.textContent = '0%';
+    backupEta.textContent = '';
     cancelBackupBtn.disabled = true;
     updateBackupButton();
     if (!silent) {
@@ -355,8 +388,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Reset diagnose state to initial
   function resetDiagnoseState(silent) {
     isDiagnosing = false;
+    diagnoseStartTime = null;
     diagnoseProgressFill.style.width = '0%';
     diagnoseProgressText.textContent = '0%';
+    diagnoseEta.textContent = '';
     diagnosePhase.textContent = '';
     diagnosePhase.className = 'phase-text';
     statSectorsChecked.textContent = '0';
@@ -551,10 +586,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Start burn
     isBurning = true;
     burnCancelled = false;
+    burnStartTime = Date.now();
     burnBtn.disabled = true;
     cancelBurnBtn.disabled = false;
     burnProgressFill.style.width = '0%';
     burnProgressText.textContent = '0%';
+    burnEta.textContent = '';
     burnPhase.textContent = 'Phase 1: Writing...';
     burnPhase.className = 'phase-text writing';
     
@@ -671,10 +708,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     isBackingUp = true;
     backupCancelled = false;
+    backupStartTime = Date.now();
     backupBtn.disabled = true;
     cancelBackupBtn.disabled = false;
     backupProgressFill.style.width = '0%';
     backupProgressText.textContent = '0%';
+    backupEta.textContent = '';
     
     logBackup('Starting backup (' + (isFilesystemMode ? 'Filesystem' : 'Raw') + ')...', 'info');
     
@@ -906,10 +945,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Start diagnose
     isDiagnosing = true;
     diagnoseCancelled = false;
+    diagnoseStartTime = Date.now();
     diagnoseBtn.disabled = true;
     cancelDiagnoseBtn.disabled = false;
     diagnoseProgressFill.style.width = '0%';
     diagnoseProgressText.textContent = '0%';
+    diagnoseEta.textContent = '';
     statSectorsChecked.textContent = '0';
     statErrorsFound.textContent = '0';
     statReadSpeed.textContent = '-';
@@ -1018,6 +1059,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (operation === 'burn') {
       burnProgressFill.style.width = percent + '%';
       burnProgressText.textContent = percent + '%';
+      burnEta.textContent = calculateEta(burnStartTime, percent);
       // Don't log every progress update, only significant ones
       if (status.indexOf('✓') >= 0 || status.indexOf('FEHLER') >= 0) {
         logBurn(status, status.indexOf('FEHLER') >= 0 ? 'error' : 'success');
@@ -1025,6 +1067,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (operation === 'backup') {
       backupProgressFill.style.width = percent + '%';
       backupProgressText.textContent = percent + '%';
+      backupEta.textContent = calculateEta(backupStartTime, percent);
       if (status.indexOf('✓') >= 0) {
         logBackup(status, 'success');
       }
@@ -1040,13 +1083,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (phase === 'verifying') {
       burnPhase.textContent = 'Phase 2: Verifying...';
       burnPhase.className = 'phase-text verifying';
+      // Reset start time for accurate ETA in verify phase
+      burnStartTime = Date.now();
+      burnEta.textContent = '';
       logBurn('Starting verification...', 'info');
     } else if (phase === 'success') {
       burnPhase.textContent = '✓ Successfully completed!';
       burnPhase.className = 'phase-text success';
+      burnEta.textContent = '';
     } else if (phase === 'error') {
       burnPhase.textContent = '✗ Verification failed!';
       burnPhase.className = 'phase-text error';
+      burnEta.textContent = '';
     }
   });
 
@@ -1055,6 +1103,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const payload = event.payload;
     diagnoseProgressFill.style.width = payload.percent + '%';
     diagnoseProgressText.textContent = payload.percent + '%';
+    diagnoseEta.textContent = calculateEta(diagnoseStartTime, payload.percent);
     diagnosePhase.textContent = payload.phase + ': ' + payload.status;
     
     // Update stats in real-time

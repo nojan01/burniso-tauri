@@ -142,5 +142,8 @@
     "language": "Language",
     "german": "Deutsch",
     "english": "English"
+  },
+  "common": {
+    "remaining": "remaining"
   }
 }

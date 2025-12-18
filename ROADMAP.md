@@ -9,8 +9,8 @@
   - Visuelles Feedback beim Ziehen (Drop-Zone)
   - Automatischer Tab-Wechsel zu "ISO → USB"
 
-- [ ] **Geschätzte Restzeit**
-  - Anzeige: "Noch ca. 3:45 verbleibend"
+- [x] **Geschätzte Restzeit**
+  - Anzeige: "~3:45 verbleibend"
   - Basierend auf aktueller Übertragungsgeschwindigkeit
   - Für Brennen, Backup und Diagnose
 
