@@ -1,6 +1,6 @@
 [package]
 name = "burniso-usb"
-version = "1.0.0"
+version = "1.1.0"
 description = "Burn ISO to USB und USB Backup Tool für macOS"
 authors = ["nojan"]
 edition = "2021"
