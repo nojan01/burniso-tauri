@@ -33,6 +33,15 @@
 - **Automatische Erkennung** des Dateisystems (APFS, HFS+, FAT32, ExFAT)
 - **ISO-Image Erkennung** - Bei ISOs auf USB wird nur die tatsächliche Größe gesichert
 
+### 🔍 USB prüfen (NEU!)
+- **Surface Scan** - Liest alle Sektoren und findet Lesefehler (nicht-destruktiv, Daten bleiben erhalten)
+- **Volltest** - Schreibt Testmuster (0x00, 0xFF) und verifiziert (destruktiv, löscht alle Daten!)
+- **Geschwindigkeitstest** - Misst Lese- und Schreibgeschwindigkeit in MB/s
+- **S.M.A.R.T. Status** - Zeigt Gesundheitsdaten für USB-Festplatten (mit [smartmontools](https://www.smartmontools.org/))
+- **Echtzeit-Statistiken** - Geprüfte Sektoren, gefundene Fehler, Geschwindigkeit
+
+> 💡 Für erweiterte S.M.A.R.T.-Daten: `brew install smartmontools`
+
 ### 🌍 Mehrsprachig
 - **Deutsch** und **English** - Umschaltbar über das Hilfe-Menü
 - Automatische Erkennung der Systemsprache beim ersten Start
@@ -119,6 +128,25 @@ cargo tauri build
    - Klicke auf "💿 USB sichern" oder `⌘⇧B`
    - Bei Raw-Backup: macOS-Passwort eingeben
 
+### USB prüfen (Diagnose)
+
+1. **USB-Stick auswählen**
+   - Stecke den USB-Stick ein
+   - Wähle ihn aus dem Dropdown-Menü
+   - S.M.A.R.T. Status wird automatisch angezeigt (falls verfügbar)
+
+2. **Testmodus wählen**
+   - **🔍 Surface Scan**: Liest alle Sektoren ohne Daten zu löschen
+   - **⚠️ Volltest**: Schreibt Testmuster und verifiziert (LÖSCHT ALLE DATEN!)
+   - **⚡ Geschwindigkeitstest**: Misst Lese-/Schreibgeschwindigkeit (LÖSCHT ALLE DATEN!)
+
+3. **Test starten**
+   - Klicke auf "🔍 Test starten" oder `⌘D`
+   - Gib dein macOS-Passwort ein
+   - Fortschritt und Statistiken werden in Echtzeit angezeigt
+
+> 💡 **Tipp**: Für erweiterte S.M.A.R.T.-Daten bei USB-Festplatten: `brew install smartmontools`
+
 ---
 
 ## Tastenkürzel
@@ -130,8 +158,10 @@ cargo tauri build
 | USB-Geräte aktualisieren | `⌘R` |
 | Tab: ISO → USB | `⌘1` |
 | Tab: USB → ISO | `⌘2` |
+| Tab: USB prüfen | `⌘3` |
 | ISO auf USB brennen | `⌘B` |
 | USB sichern | `⌘⇧B` |
+| USB-Diagnose starten | `⌘D` |
 | Vorgang abbrechen | `⌘.` |
 | Dunkles Design | `⌘⇧D` |
 | Helles Design | `⌘⇧L` |

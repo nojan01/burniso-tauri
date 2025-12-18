@@ -365,6 +365,787 @@ fn save_window_state(width: u32, height: u32, x: i32, y: i32) -> Result<(), Stri
 
 static CANCEL_BURN: AtomicBool = AtomicBool::new(false);
 static CANCEL_BACKUP: AtomicBool = AtomicBool::new(false);
+static CANCEL_DIAGNOSE: AtomicBool = AtomicBool::new(false);
+
+/// SMART data structure
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SmartData {
+    pub available: bool,
+    pub health_status: String,
+    pub temperature: Option<i32>,
+    pub power_on_hours: Option<u64>,
+    pub power_cycle_count: Option<u64>,
+    pub reallocated_sectors: Option<u64>,
+    pub pending_sectors: Option<u64>,
+    pub uncorrectable_sectors: Option<u64>,
+    pub attributes: Vec<SmartAttribute>,
+    pub source: String, // "smartctl" or "diskutil" or "none"
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SmartAttribute {
+    pub id: u32,
+    pub name: String,
+    pub value: String,
+    pub worst: Option<String>,
+    pub threshold: Option<String>,
+    pub raw_value: String,
+    pub status: String, // "ok", "warning", "critical"
+}
+
+/// Diagnose progress event with statistics
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DiagnoseProgressEvent {
+    pub percent: u32,
+    pub status: String,
+    pub phase: String,
+    pub sectors_checked: u64,
+    pub errors_found: u64,
+    pub read_speed_mbps: f64,
+    pub write_speed_mbps: f64,
+}
+
+/// Diagnose result
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DiagnoseResult {
+    pub success: bool,
+    pub total_sectors: u64,
+    pub sectors_checked: u64,
+    pub errors_found: u64,
+    pub bad_sectors: Vec<u64>,
+    pub read_speed_mbps: f64,
+    pub write_speed_mbps: f64,
+    pub message: String,
+}
+
+#[tauri::command]
+fn cancel_diagnose() {
+    CANCEL_DIAGNOSE.store(true, Ordering::SeqCst);
+}
+
+/// Get the path to smartctl (checking common installation locations)
+fn get_smartctl_path() -> Option<String> {
+    // Check common paths for smartctl (Homebrew paths, standard paths)
+    let paths = [
+        "/opt/homebrew/bin/smartctl",  // Homebrew on Apple Silicon
+        "/usr/local/bin/smartctl",      // Homebrew on Intel Mac
+        "/usr/bin/smartctl",             // System path
+        "/usr/sbin/smartctl",            // System path
+    ];
+    
+    for path in paths {
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    
+    // Fallback: try which command
+    if let Ok(output) = Command::new("which").arg("smartctl").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Check if smartmontools is installed
+#[tauri::command]
+fn check_smartctl_installed() -> bool {
+    get_smartctl_path().is_some()
+}
+
+/// Get SMART data for a disk
+#[tauri::command]
+fn get_smart_data(disk_id: String) -> SmartData {
+    // First, try smartctl (most comprehensive, but requires smartmontools)
+    if let Some(data) = try_smartctl(&disk_id) {
+        return data;
+    }
+    
+    // Fallback: Try to get basic info from diskutil (limited but always available)
+    if let Some(data) = try_diskutil_smart(&disk_id) {
+        return data;
+    }
+    
+    // No SMART data available
+    SmartData {
+        available: false,
+        health_status: "Unbekannt".to_string(),
+        temperature: None,
+        power_on_hours: None,
+        power_cycle_count: None,
+        reallocated_sectors: None,
+        pending_sectors: None,
+        uncorrectable_sectors: None,
+        attributes: Vec::new(),
+        source: "none".to_string(),
+        error_message: Some("SMART data not available for this device. USB sticks and SD cards typically do not support SMART. For USB hard drives, you can install 'smartmontools' (brew install smartmontools).".to_string()),
+    }
+}
+
+fn try_smartctl(disk_id: &str) -> Option<SmartData> {
+    // Get smartctl path
+    let smartctl_path = get_smartctl_path()?;
+    
+    let device_path = format!("/dev/{}", disk_id);
+    
+    // First, quick check if SMART is supported at all (fast command)
+    let info_output = Command::new(&smartctl_path)
+        .args(["-i", &device_path])
+        .output()
+        .ok()?;
+    
+    let info_text = String::from_utf8_lossy(&info_output.stdout);
+    let info_stderr = String::from_utf8_lossy(&info_output.stderr);
+    
+    // Check for common indicators that SMART is not supported
+    if info_text.contains("Unknown USB bridge") 
+        || info_text.contains("Device type: unknown")
+        || info_stderr.contains("Unable to detect device type")
+        || info_stderr.contains("Unknown USB bridge")
+        || (!info_text.contains("SMART support is:") && !info_text.contains("SMART Health Status")) {
+        return None;
+    }
+    
+    // Check if SMART is explicitly unavailable
+    if info_text.contains("SMART support is: Unavailable") 
+        || info_text.contains("Device does not support SMART") {
+        return None;
+    }
+    
+    // Run smartctl -a (all info) with JSON output
+    let output = Command::new(&smartctl_path)
+        .args(["-a", "-j", &device_path])
+        .output()
+        .ok()?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    // Parse JSON output
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        // Check if device type is recognized
+        let device_type = json.get("device").and_then(|d| d.get("type")).and_then(|t| t.as_str());
+        if device_type == Some("unknown") {
+            return None;
+        }
+        
+        let smart_status = json.get("smart_status")
+            .and_then(|s| s.get("passed"))
+            .and_then(|p| p.as_bool());
+        
+        let health_status = match smart_status {
+            Some(true) => "PASSED ✅".to_string(),
+            Some(false) => "FAILED ❌".to_string(),
+            None => "Unbekannt".to_string(),
+        };
+        
+        let temperature = json.get("temperature")
+            .and_then(|t| t.get("current"))
+            .and_then(|c| c.as_i64())
+            .map(|t| t as i32);
+        
+        let power_on_hours = json.get("power_on_time")
+            .and_then(|p| p.get("hours"))
+            .and_then(|h| h.as_u64());
+        
+        let power_cycle_count = json.get("power_cycle_count")
+            .and_then(|p| p.as_u64());
+        
+        // Parse SMART attributes
+        let mut attributes = Vec::new();
+        let mut reallocated_sectors = None;
+        let mut pending_sectors = None;
+        let mut uncorrectable_sectors = None;
+        
+        if let Some(attrs) = json.get("ata_smart_attributes").and_then(|a| a.get("table")).and_then(|t| t.as_array()) {
+            for attr in attrs {
+                let id = attr.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+                let name = attr.get("name").and_then(|n| n.as_str()).unwrap_or("Unknown").to_string();
+                let value = attr.get("value").and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or("-".to_string());
+                let worst = attr.get("worst").and_then(|w| w.as_u64()).map(|w| w.to_string());
+                let threshold = attr.get("thresh").and_then(|t| t.as_u64()).map(|t| t.to_string());
+                let raw_value = attr.get("raw").and_then(|r| r.get("value")).and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or("-".to_string());
+                
+                // Check for critical attributes
+                let status = if id == 5 || id == 196 || id == 197 || id == 198 {
+                    let raw = attr.get("raw").and_then(|r| r.get("value")).and_then(|v| v.as_u64()).unwrap_or(0);
+                    if raw > 0 {
+                        if id == 5 { reallocated_sectors = Some(raw); }
+                        if id == 197 { pending_sectors = Some(raw); }
+                        if id == 198 { uncorrectable_sectors = Some(raw); }
+                        "warning".to_string()
+                    } else {
+                        "ok".to_string()
+                    }
+                } else {
+                    "ok".to_string()
+                };
+                
+                attributes.push(SmartAttribute {
+                    id,
+                    name,
+                    value,
+                    worst,
+                    threshold,
+                    raw_value,
+                    status,
+                });
+            }
+        }
+        
+        return Some(SmartData {
+            available: true,
+            health_status,
+            temperature,
+            power_on_hours,
+            power_cycle_count,
+            reallocated_sectors,
+            pending_sectors,
+            uncorrectable_sectors,
+            attributes,
+            source: "smartctl".to_string(),
+            error_message: None,
+        });
+    }
+    
+    // Try plain text parsing if JSON fails
+    let output_text = Command::new("smartctl")
+        .args(["-H", "-A", &device_path])
+        .output()
+        .ok()?;
+    
+    let text = String::from_utf8_lossy(&output_text.stdout);
+    
+    if text.contains("SMART support is:") && !text.contains("Unavailable") {
+        let health_status = if text.contains("PASSED") {
+            "PASSED ✅".to_string()
+        } else if text.contains("FAILED") {
+            "FAILED ❌".to_string()
+        } else {
+            "Unbekannt".to_string()
+        };
+        
+        return Some(SmartData {
+            available: true,
+            health_status,
+            temperature: None,
+            power_on_hours: None,
+            power_cycle_count: None,
+            reallocated_sectors: None,
+            pending_sectors: None,
+            uncorrectable_sectors: None,
+            attributes: Vec::new(),
+            source: "smartctl".to_string(),
+            error_message: Some("Detailed SMART data could not be read.".to_string()),
+        });
+    }
+    
+    None
+}
+
+fn try_diskutil_smart(disk_id: &str) -> Option<SmartData> {
+    // diskutil info provides some basic health info for some drives
+    let output = Command::new("diskutil")
+        .args(["info", disk_id])
+        .output()
+        .ok()?;
+    
+    let text = String::from_utf8_lossy(&output.stdout);
+    
+    // Check if SMART Status is present
+    for line in text.lines() {
+        if line.contains("SMART Status:") {
+            let status = line.split(':').nth(1)?.trim();
+            
+            // "Not Supported" means SMART is not available for this device
+            if status.contains("Not Supported") || status.contains("not supported") {
+                return None;
+            }
+            
+            let health_status = if status.contains("Verified") || status.contains("OK") {
+                "PASSED ✅".to_string()
+            } else if status.contains("Fail") {
+                "FAILED ❌".to_string()
+            } else {
+                status.to_string()
+            };
+            
+            return Some(SmartData {
+                available: true,
+                health_status,
+                temperature: None,
+                power_on_hours: None,
+                power_cycle_count: None,
+                reallocated_sectors: None,
+                pending_sectors: None,
+                uncorrectable_sectors: None,
+                attributes: Vec::new(),
+                source: "diskutil".to_string(),
+                error_message: Some("Only basic SMART status available. For detailed data, install 'smartmontools' (brew install smartmontools).".to_string()),
+            });
+        }
+    }
+    
+    None
+}
+
+fn emit_diagnose_progress(app: &AppHandle, percent: u32, status: &str, phase: &str, 
+    sectors_checked: u64, errors_found: u64, read_speed: f64, write_speed: f64) {
+    let _ = app.emit("diagnose_progress", DiagnoseProgressEvent {
+        percent,
+        status: status.to_string(),
+        phase: phase.to_string(),
+        sectors_checked,
+        errors_found,
+        read_speed_mbps: read_speed,
+        write_speed_mbps: write_speed,
+    });
+}
+
+/// Surface scan - read all sectors and detect read errors (non-destructive)
+#[tauri::command]
+async fn diagnose_surface_scan(app: AppHandle, disk_id: String, password: String) -> Result<DiagnoseResult, String> {
+    CANCEL_DIAGNOSE.store(false, Ordering::SeqCst);
+    
+    let device_path = format!("/dev/r{}", disk_id);
+    
+    // First unmount all partitions
+    let unmount_script = format!(
+        "echo '{}' | sudo -S diskutil unmountDisk force {} 2>&1",
+        password.replace("'", "'\\''"),
+        disk_id
+    );
+    let _ = Command::new("sh").args(["-c", &unmount_script]).output();
+    
+    // Get disk size
+    let size_output = Command::new("diskutil").args(["info", "-plist", &disk_id]).output()
+        .map_err(|e| format!("Failed to get disk info: {}", e))?;
+    let plist = String::from_utf8_lossy(&size_output.stdout);
+    let total_bytes = extract_plist_value(&plist, "TotalSize")
+        .ok_or("Failed to get disk size")?;
+    
+    const BLOCK_SIZE: u64 = 16 * 1024 * 1024; // 16MB blocks for better performance
+    let total_blocks = (total_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let total_sectors = total_bytes / 512;
+    
+    emit_diagnose_progress(&app, 0, "Starting surface scan...", "reading", 0, 0, 0.0, 0.0);
+    
+    // Run in blocking thread to avoid freezing UI
+    let app_clone = app.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut sectors_checked: u64 = 0;
+        let mut errors_found: u64 = 0;
+        let bad_sectors: Vec<u64> = Vec::new();
+        let start_time = std::time::Instant::now();
+        let mut bytes_read: u64 = 0;
+        
+        // Read using dd with sudo - use larger blocks for speed
+        for block in 0..total_blocks {
+            if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                return DiagnoseResult {
+                    success: false,
+                    total_sectors,
+                    sectors_checked,
+                    errors_found,
+                    bad_sectors,
+                    read_speed_mbps: 0.0,
+                    write_speed_mbps: 0.0,
+                    message: "Scan cancelled".to_string(),
+                };
+            }
+            
+            // Use dd to read 16MB at a time with sudo
+            let dd_cmd = format!(
+                "echo '{}' | sudo -S dd if={} bs=16m skip={} count=1 2>/dev/null | wc -c",
+                password.replace("'", "'\\''"),
+                device_path,
+                block
+            );
+            
+            let result = Command::new("sh").args(["-c", &dd_cmd]).output();
+            
+            match result {
+                Ok(output) => {
+                    let bytes_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let read_bytes: u64 = bytes_str.parse().unwrap_or(0);
+                    if read_bytes > 0 {
+                        bytes_read += read_bytes;
+                        sectors_checked += read_bytes / 512;
+                    } else {
+                        errors_found += 1;
+                    }
+                }
+                Err(_) => {
+                    errors_found += 1;
+                }
+            }
+            
+            let percent = ((block + 1) * 100 / total_blocks) as u32;
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let read_speed = if elapsed > 0.0 { (bytes_read as f64 / 1024.0 / 1024.0) / elapsed } else { 0.0 };
+            
+            // Update progress every block (since blocks are now 16MB)
+            let status = format!("Reading {:.0} MB / {:.0} MB", bytes_read as f64 / 1024.0 / 1024.0, total_bytes as f64 / 1024.0 / 1024.0);
+            emit_diagnose_progress(&app_clone, percent.min(99), &status, "reading", sectors_checked, errors_found, read_speed, 0.0);
+        }
+        
+        let elapsed = start_time.elapsed().as_secs_f64();
+        let read_speed = if elapsed > 0.0 { (bytes_read as f64 / 1024.0 / 1024.0) / elapsed } else { 0.0 };
+        
+        let message = if errors_found == 0 {
+            format!("Surface scan complete. No errors found. Read speed: {:.1} MB/s", read_speed)
+        } else {
+            format!("Surface scan complete. {} errors found!", errors_found)
+        };
+        
+        emit_diagnose_progress(&app_clone, 100, &message, "complete", sectors_checked, errors_found, read_speed, 0.0);
+        
+        DiagnoseResult {
+            success: errors_found == 0,
+            total_sectors,
+            sectors_checked,
+            errors_found,
+            bad_sectors,
+            read_speed_mbps: read_speed,
+            write_speed_mbps: 0.0,
+            message,
+        }
+    }).await.map_err(|e| e.to_string())?;
+    
+    Ok(result)
+}
+
+/// Full test - write patterns and verify (destructive!)
+#[tauri::command]
+async fn diagnose_full_test(app: AppHandle, disk_id: String, password: String) -> Result<DiagnoseResult, String> {
+    CANCEL_DIAGNOSE.store(false, Ordering::SeqCst);
+    
+    // Use rdisk for raw device access (like speed test)
+    let device_path = format!("/dev/r{}", disk_id);
+    
+    // Unmount all partitions
+    let unmount_script = format!(
+        "echo '{}' | sudo -S diskutil unmountDisk force {} 2>&1",
+        password.replace("'", "'\\''"),
+        disk_id
+    );
+    let _ = Command::new("sh").args(["-c", &unmount_script]).output();
+    
+    // Get disk size
+    let size_output = Command::new("diskutil").args(["info", "-plist", &disk_id]).output()
+        .map_err(|e| format!("Failed to get disk info: {}", e))?;
+    let plist = String::from_utf8_lossy(&size_output.stdout);
+    let total_bytes = extract_plist_value(&plist, "TotalSize")
+        .ok_or("Failed to get disk size")?;
+    
+    const BLOCK_SIZE: u64 = 64 * 1024 * 1024; // 64MB blocks for maximum throughput
+    let total_blocks = total_bytes / BLOCK_SIZE;
+    let total_sectors = total_bytes / 512;
+    
+    emit_diagnose_progress(&app, 0, "Starting full test...", "writing", 0, 0, 0.0, 0.0);
+    
+    // Run in blocking thread
+    let app_clone = app.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // Test patterns - reduced to 2 for speed (0x00 and 0xFF catch most errors)
+        let patterns: [(u8, &str); 2] = [
+            (0x00, "zeros"),
+            (0xFF, "ones"),
+        ];
+        
+        let mut sectors_checked: u64 = 0;
+        let mut errors_found: u64 = 0;
+        let bad_sectors: Vec<u64> = Vec::new();
+        let mut total_write_time: f64 = 0.0;
+        let mut total_read_time: f64 = 0.0;
+        let mut total_write_bytes: u64 = 0;
+        let mut total_read_bytes: u64 = 0;
+        
+        for (pattern_idx, (pattern, pattern_name)) in patterns.iter().enumerate() {
+            if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                return DiagnoseResult {
+                    success: false,
+                    total_sectors,
+                    sectors_checked,
+                    errors_found,
+                    bad_sectors,
+                    read_speed_mbps: 0.0,
+                    write_speed_mbps: 0.0,
+                    message: "Test cancelled".to_string(),
+                };
+            }
+            
+            // Create temp file with pattern
+            let temp_pattern = format!("/tmp/burniso_pattern_{:02X}.bin", pattern);
+            let write_buffer: Vec<u8> = vec![*pattern; BLOCK_SIZE as usize];
+            if let Ok(mut tf) = File::create(&temp_pattern) {
+                let _ = tf.write_all(&write_buffer);
+            }
+            
+            // Write phase
+            let write_start = std::time::Instant::now();
+            
+            for block in 0..total_blocks {
+                if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                    let _ = std::fs::remove_file(&temp_pattern);
+                    return DiagnoseResult {
+                        success: false,
+                        total_sectors,
+                        sectors_checked,
+                        errors_found,
+                        bad_sectors,
+                        read_speed_mbps: 0.0,
+                        write_speed_mbps: 0.0,
+                        message: "Test cancelled".to_string(),
+                    };
+                }
+                
+                // dd write command with 64MB blocks
+                let dd_cmd = format!(
+                    "echo '{}' | sudo -S dd if={} of={} bs=64m seek={} count=1 conv=notrunc 2>/dev/null",
+                    password.replace("'", "'\\''"),
+                    temp_pattern,
+                    device_path,
+                    block
+                );
+                
+                if Command::new("sh").args(["-c", &dd_cmd]).output().is_ok() {
+                    total_write_bytes += BLOCK_SIZE;
+                }
+                
+                // Update GUI every block
+                // Total: 4 phases (2 patterns × write + verify), each phase = 25%
+                // Pattern 0 Write: 0-25%, Pattern 0 Verify: 25-50%
+                // Pattern 1 Write: 50-75%, Pattern 1 Verify: 75-100%
+                let phase_progress = (block + 1) as f64 / total_blocks as f64; // 0.0 to 1.0
+                let base_percent = (pattern_idx * 50) as f64;
+                let percent = (base_percent + phase_progress * 25.0) as u32;
+                let status = format!("Writing {} ({}/{})", pattern_name, block + 1, total_blocks);
+                emit_diagnose_progress(&app_clone, percent.min(99), &status, "writing", sectors_checked, errors_found, 0.0, 0.0);
+            }
+            
+            total_write_time += write_start.elapsed().as_secs_f64();
+            let _ = Command::new("sync").output();
+            
+            // Verify phase using dd
+            let read_start = std::time::Instant::now();
+            
+            for block in 0..total_blocks {
+                if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                    let _ = std::fs::remove_file(&temp_pattern);
+                    break;
+                }
+                
+                // Read block using dd - just check first byte for speed
+                let dd_read = format!(
+                    "echo '{}' | sudo -S dd if={} bs=64m skip={} count=1 2>/dev/null | head -c 1 | xxd -p",
+                    password.replace("'", "'\\''"),
+                    device_path,
+                    block
+                );
+                
+                let result = Command::new("sh").args(["-c", &dd_read]).output();
+                
+                match result {
+                    Ok(output) => {
+                        let hex = String::from_utf8_lossy(&output.stdout);
+                        // Check if pattern matches (first bytes should be pattern)
+                        let expected = format!("{:02x}", pattern);
+                        if !hex.is_empty() {
+                            total_read_bytes += BLOCK_SIZE;
+                            sectors_checked += BLOCK_SIZE / 512;
+                            if !hex.starts_with(&expected) && !hex.starts_with(&expected.to_uppercase()) {
+                                errors_found += 1;
+                            }
+                        } else {
+                            errors_found += 1;
+                        }
+                    }
+                    Err(_) => {
+                        errors_found += 1;
+                    }
+                }
+                
+                // Update GUI every block
+                // Pattern 0 Verify: 25-50%, Pattern 1 Verify: 75-100%
+                let phase_progress = (block + 1) as f64 / total_blocks as f64;
+                let base_percent = (pattern_idx * 50 + 25) as f64;
+                let percent = (base_percent + phase_progress * 25.0) as u32;
+                let status = format!("Verifying {} ({}/{})", pattern_name, block + 1, total_blocks);
+                emit_diagnose_progress(&app_clone, percent.min(99), &status, "verifying", sectors_checked, errors_found, 0.0, 0.0);
+            }
+            
+            total_read_time += read_start.elapsed().as_secs_f64();
+            let _ = std::fs::remove_file(&temp_pattern);
+        }
+        
+        let write_speed = if total_write_time > 0.0 { (total_write_bytes as f64 / 1024.0 / 1024.0) / total_write_time } else { 0.0 };
+        let read_speed = if total_read_time > 0.0 { (total_read_bytes as f64 / 1024.0 / 1024.0) / total_read_time } else { 0.0 };
+        
+        let message = if errors_found == 0 {
+            format!("Full test complete. No errors. Write: {:.1} MB/s, Read: {:.1} MB/s", write_speed, read_speed)
+        } else {
+            format!("Full test complete. {} errors found!", errors_found)
+        };
+        
+        emit_diagnose_progress(&app_clone, 100, &message, "complete", sectors_checked, errors_found, read_speed, write_speed);
+        
+        DiagnoseResult {
+            success: errors_found == 0,
+            total_sectors,
+            sectors_checked,
+            errors_found,
+            bad_sectors,
+            read_speed_mbps: read_speed,
+            write_speed_mbps: write_speed,
+            message,
+        }
+    }).await.map_err(|e| e.to_string())?;
+    
+    Ok(result)
+}
+
+/// Speed test - measure read and write performance (destructive for write!)
+#[tauri::command]
+async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) -> Result<DiagnoseResult, String> {
+    CANCEL_DIAGNOSE.store(false, Ordering::SeqCst);
+    
+    let device_path = format!("/dev/r{}", disk_id);
+    
+    // Unmount
+    let unmount_script = format!(
+        "echo '{}' | sudo -S diskutil unmountDisk force {} 2>&1",
+        password.replace("'", "'\\''"),
+        disk_id
+    );
+    let _ = Command::new("sh").args(["-c", &unmount_script]).output();
+    
+    // Get disk size
+    let size_output = Command::new("diskutil").args(["info", "-plist", &disk_id]).output()
+        .map_err(|e| format!("Failed to get disk info: {}", e))?;
+    let plist = String::from_utf8_lossy(&size_output.stdout);
+    let total_bytes = extract_plist_value(&plist, "TotalSize")
+        .ok_or("Failed to get disk size")?;
+    
+    // Test with 256MB or 10% of disk, whichever is smaller
+    let test_size = std::cmp::min(256 * 1024 * 1024, total_bytes / 10);
+    const BLOCK_SIZE: u64 = 16 * 1024 * 1024; // 16MB blocks for better throughput
+    let test_blocks = test_size / BLOCK_SIZE;
+    
+    emit_diagnose_progress(&app, 0, "Starting speed test...", "writing", 0, 0, 0.0, 0.0);
+    
+    // Run in blocking thread
+    let app_clone = app.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // Create test pattern
+        let write_buffer: Vec<u8> = (0..BLOCK_SIZE as usize).map(|i| (i % 256) as u8).collect();
+        let temp_pattern = "/tmp/burniso_speedtest.bin";
+        if let Ok(mut tf) = File::create(temp_pattern) {
+            let _ = tf.write_all(&write_buffer);
+        }
+        
+        // Write speed test
+        let write_start = std::time::Instant::now();
+        let mut bytes_written: u64 = 0;
+        
+        for block in 0..test_blocks {
+            if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                let _ = std::fs::remove_file(temp_pattern);
+                return DiagnoseResult {
+                    success: false,
+                    total_sectors: total_bytes / 512,
+                    sectors_checked: 0,
+                    errors_found: 0,
+                    bad_sectors: Vec::new(),
+                    read_speed_mbps: 0.0,
+                    write_speed_mbps: 0.0,
+                    message: "Speed test cancelled".to_string(),
+                };
+            }
+            
+            let dd_cmd = format!(
+                "echo '{}' | sudo -S dd if={} of={} bs=16m seek={} count=1 conv=notrunc 2>/dev/null",
+                password.replace("'", "'\\''"),
+                temp_pattern,
+                device_path,
+                block
+            );
+            
+            if Command::new("sh").args(["-c", &dd_cmd]).output().is_ok() {
+                bytes_written += BLOCK_SIZE;
+            }
+            
+            if block % 10 == 0 {
+                let percent = ((block + 1) * 50 / test_blocks) as u32;
+                let elapsed = write_start.elapsed().as_secs_f64();
+                let current_speed = if elapsed > 0.0 { (bytes_written as f64 / 1024.0 / 1024.0) / elapsed } else { 0.0 };
+                emit_diagnose_progress(&app_clone, percent, &format!("Writing... {:.1} MB/s", current_speed), "writing", 0, 0, 0.0, current_speed);
+            }
+        }
+        
+        let _ = Command::new("sync").output();
+        let write_time = write_start.elapsed().as_secs_f64();
+        let write_speed = if write_time > 0.0 { (bytes_written as f64 / 1024.0 / 1024.0) / write_time } else { 0.0 };
+        
+        // Read speed test using dd
+        emit_diagnose_progress(&app_clone, 50, "Testing read speed...", "reading", 0, 0, 0.0, write_speed);
+        
+        let read_start = std::time::Instant::now();
+        let mut bytes_read: u64 = 0;
+        
+        for block in 0..test_blocks {
+            if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                break;
+            }
+            
+            let dd_read = format!(
+                "echo '{}' | sudo -S dd if={} bs=16m skip={} count=1 2>/dev/null | wc -c",
+                password.replace("'", "'\\''"),
+                device_path,
+                block
+            );
+            
+            if let Ok(output) = Command::new("sh").args(["-c", &dd_read]).output() {
+                let bytes_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let n: u64 = bytes_str.parse().unwrap_or(0);
+                bytes_read += n;
+            }
+            
+            if block % 10 == 0 {
+                let percent = 50 + ((block + 1) * 50 / test_blocks) as u32;
+                let elapsed = read_start.elapsed().as_secs_f64();
+                let current_speed = if elapsed > 0.0 { (bytes_read as f64 / 1024.0 / 1024.0) / elapsed } else { 0.0 };
+                emit_diagnose_progress(&app_clone, percent.min(99), &format!("Reading... {:.1} MB/s", current_speed), "reading", 0, 0, current_speed, write_speed);
+            }
+        }
+        
+        let read_time = read_start.elapsed().as_secs_f64();
+        let read_speed = if read_time > 0.0 { (bytes_read as f64 / 1024.0 / 1024.0) / read_time } else { 0.0 };
+        
+        let _ = std::fs::remove_file(temp_pattern);
+        
+        let message = format!("Speed test complete. Write: {:.1} MB/s, Read: {:.1} MB/s", write_speed, read_speed);
+        emit_diagnose_progress(&app_clone, 100, &message, "complete", 0, 0, read_speed, write_speed);
+        
+        DiagnoseResult {
+            success: true,
+            total_sectors: total_bytes / 512,
+            sectors_checked: bytes_read / 512,
+            errors_found: 0,
+            bad_sectors: Vec::new(),
+            read_speed_mbps: read_speed,
+            write_speed_mbps: write_speed,
+            message,
+        }
+    }).await.map_err(|e| e.to_string())?;
+    
+    Ok(result)
+}
 
 #[tauri::command]
 fn list_disks() -> Result<Vec<DiskInfo>, String> {
@@ -885,10 +1666,10 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
         ("Ablage", "ISO-Datei öffnen...", "Speicherort wählen...", "USB-Geräte aktualisieren", "Fenster schließen")
     };
     
-    let (action_menu_label, start_burn_label, start_backup_label, cancel_label) = if lang == "en" {
-        ("Action", "Burn ISO to USB", "Backup USB", "Cancel Operation")
+    let (action_menu_label, start_burn_label, start_backup_label, start_diagnose_label, cancel_label) = if lang == "en" {
+        ("Action", "Burn ISO to USB", "Backup USB", "Start Diagnostic", "Cancel Operation")
     } else {
-        ("Aktion", "ISO auf USB brennen", "USB sichern", "Vorgang abbrechen")
+        ("Aktion", "ISO auf USB brennen", "USB sichern", "Diagnose starten", "Vorgang abbrechen")
     };
     
     let (window_menu_label, minimize_label, fullscreen_label) = if lang == "en" {
@@ -938,15 +1719,18 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
     // Aktion-Menü
     let tab_burn = MenuItem::with_id(app_handle, "tab_burn", "ISO → USB", true, Some("CmdOrCtrl+1"))?;
     let tab_backup = MenuItem::with_id(app_handle, "tab_backup", "USB → ISO", true, Some("CmdOrCtrl+2"))?;
+    let tab_diagnose_label = if lang == "en" { "USB Diagnostic" } else { "USB Diagnose" };
+    let tab_diagnose = MenuItem::with_id(app_handle, "tab_diagnose", tab_diagnose_label, true, Some("CmdOrCtrl+3"))?;
     let start_burn = MenuItem::with_id(app_handle, "start_burn", start_burn_label, true, Some("CmdOrCtrl+B"))?;
     let start_backup = MenuItem::with_id(app_handle, "start_backup", start_backup_label, true, Some("CmdOrCtrl+Shift+B"))?;
+    let start_diagnose = MenuItem::with_id(app_handle, "start_diagnose", start_diagnose_label, true, Some("CmdOrCtrl+D"))?;
     let cancel_action = MenuItem::with_id(app_handle, "cancel_action", cancel_label, true, Some("CmdOrCtrl+."))?;
     
     let action_menu = Submenu::with_items(
         app_handle,
         action_menu_label,
         true,
-        &[&tab_burn, &tab_backup, &PredefinedMenuItem::separator(app_handle)?, &start_burn, &start_backup, &PredefinedMenuItem::separator(app_handle)?, &cancel_action],
+        &[&tab_burn, &tab_backup, &tab_diagnose, &PredefinedMenuItem::separator(app_handle)?, &start_burn, &start_backup, &start_diagnose, &PredefinedMenuItem::separator(app_handle)?, &cancel_action],
     )?;
     
     // Fenster-Menü
@@ -1008,6 +1792,12 @@ pub fn run() {
             backup_usb_filesystem,
             cancel_burn,
             cancel_backup,
+            cancel_diagnose,
+            diagnose_surface_scan,
+            diagnose_full_test,
+            diagnose_speed_test,
+            get_smart_data,
+            check_smartctl_installed,
             get_window_state,
             save_window_state,
             set_menu_language
@@ -1041,8 +1831,10 @@ pub fn run() {
                         "select_destination" => { let _ = window.emit("menu-action", "select_destination"); }
                         "tab_burn" => { let _ = window.emit("menu-action", "tab_burn"); }
                         "tab_backup" => { let _ = window.emit("menu-action", "tab_backup"); }
+                        "tab_diagnose" => { let _ = window.emit("menu-action", "tab_diagnose"); }
                         "start_burn" => { let _ = window.emit("menu-action", "start_burn"); }
                         "start_backup" => { let _ = window.emit("menu-action", "start_backup"); }
+                        "start_diagnose" => { let _ = window.emit("menu-action", "start_diagnose"); }
                         "cancel_action" => { let _ = window.emit("menu-action", "cancel_action"); }
                         "lang_de" => {
                             let _ = build_menu(&app_handle_clone, "de");

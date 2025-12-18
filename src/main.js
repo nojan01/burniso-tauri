@@ -21,6 +21,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   let isBackingUp = false;
   let burnCancelled = false;
   let backupCancelled = false;
+  let selectedDiagnoseDisk = null;
+  let isDiagnosing = false;
+  let diagnoseCancelled = false;
 
   // Confirm modal elements
   const confirmModal = document.getElementById('confirm-modal');
@@ -99,7 +102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (password && passwordResolve) {
       passwordResolve(password);
     } else if (passwordReject) {
-      passwordReject('Kein Passwort eingegeben');
+      passwordReject('No password entered');
     }
     passwordResolve = null;
     passwordReject = null;
@@ -161,13 +164,90 @@ document.addEventListener('DOMContentLoaded', async () => {
   const backupProgressText = document.getElementById('backup-progress-text');
   const backupLog = document.getElementById('backup-log');
 
+  // Diagnose tab elements
+  const diagnoseDiskSelect = document.getElementById('diagnose-disk-select');
+  const refreshDiagnoseDisks = document.getElementById('refresh-diagnose-disks');
+  const diagnoseDiskInfo = document.getElementById('diagnose-disk-info');
+  const diagnoseModeInputs = document.querySelectorAll('input[name="diagnose-mode"]');
+  const diagnoseWarning = document.getElementById('diagnose-warning');
+  const diagnoseBtn = document.getElementById('diagnose-btn');
+  const cancelDiagnoseBtn = document.getElementById('cancel-diagnose-btn');
+  const diagnoseProgressFill = document.getElementById('diagnose-progress-fill');
+  const diagnoseProgressText = document.getElementById('diagnose-progress-text');
+  const diagnosePhase = document.getElementById('diagnose-phase');
+  const statSectorsChecked = document.getElementById('stat-sectors-checked');
+  const statErrorsFound = document.getElementById('stat-errors-found');
+  const statReadSpeed = document.getElementById('stat-read-speed');
+  const statWriteSpeed = document.getElementById('stat-write-speed');
+  const diagnoseLog = document.getElementById('diagnose-log');
+  
+  // SMART elements
+  const smartLoading = document.getElementById('smart-loading');
+  const smartUnavailable = document.getElementById('smart-unavailable');
+  const smartUnavailableMsg = document.getElementById('smart-unavailable-msg');
+  const smartData = document.getElementById('smart-data');
+  const smartHealthValue = document.getElementById('smart-health-value');
+  const smartTempValue = document.getElementById('smart-temp-value');
+  const smartHoursValue = document.getElementById('smart-hours-value');
+  const smartCyclesValue = document.getElementById('smart-cycles-value');
+  const smartReallocatedValue = document.getElementById('smart-reallocated-value');
+  const smartPendingValue = document.getElementById('smart-pending-value');
+  const smartUncorrectableValue = document.getElementById('smart-uncorrectable-value');
+  const smartSource = document.getElementById('smart-source');
+  const smartWarning = document.getElementById('smart-warning');
+  const smartStatusBadge = document.getElementById('smart-status-badge');
+  const smartSection = document.getElementById('smart-section');
+  const smartHeader = document.getElementById('smart-header');
+  const smartContent = document.getElementById('smart-content');
+  const statsSection = document.getElementById('diagnose-stats-section');
+  const statsHeader = document.getElementById('stats-header');
+  const statsContent = document.getElementById('stats-content');
+  const statsSummaryBadge = document.getElementById('stats-summary-badge');
+
+  // Collapsible section toggle
+  function setupCollapsible(header, content, section) {
+    header.addEventListener('click', () => {
+      const isExpanded = section.classList.contains('expanded');
+      if (isExpanded) {
+        section.classList.remove('expanded');
+        content.classList.add('hidden');
+      } else {
+        section.classList.add('expanded');
+        content.classList.remove('hidden');
+      }
+    });
+  }
+  
+  setupCollapsible(smartHeader, smartContent, smartSection);
+  setupCollapsible(statsHeader, statsContent, statsSection);
+
+  // Track if smartctl check was already done
+  let smartctlCheckDone = false;
+
   // Tab switching
   tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
+    tab.addEventListener('click', async () => {
       tabs.forEach(t => t.classList.remove('active'));
       tabContents.forEach(c => c.classList.remove('active'));
       tab.classList.add('active');
       document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
+      
+      // Check smartctl when switching to diagnose tab
+      if (tab.dataset.tab === 'diagnose' && !smartctlCheckDone) {
+        smartctlCheckDone = true;
+        try {
+          const installed = await invoke('check_smartctl_installed');
+          if (!installed) {
+            logDiagnose('💡 Tip: For extended S.M.A.R.T. data on USB hard drives:', 'info');
+            logDiagnose('   brew install smartmontools', 'warning');
+            logDiagnose('   (USB sticks and SD cards do not support SMART)', 'info');
+          } else {
+            logDiagnose('✅ smartmontools detected - full SMART support available', 'success');
+          }
+        } catch (err) {
+          // Ignore errors
+        }
+      }
     });
   });
 
@@ -184,6 +264,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const timestamp = new Date().toLocaleTimeString();
     backupLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
     backupLog.scrollTop = backupLog.scrollHeight;
+  }
+
+  function logDiagnose(message, type) {
+    type = type || 'info';
+    const timestamp = new Date().toLocaleTimeString();
+    diagnoseLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
+    diagnoseLog.scrollTop = diagnoseLog.scrollHeight;
   }
 
   // Reset burn state to initial (silent = no disk reload log)
@@ -213,6 +300,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
     } else {
       loadDisksSilent(backupDiskSelect, backupDiskInfo);
+    }
+  }
+
+  // Reset diagnose state to initial
+  function resetDiagnoseState(silent) {
+    isDiagnosing = false;
+    diagnoseProgressFill.style.width = '0%';
+    diagnoseProgressText.textContent = '0%';
+    diagnosePhase.textContent = '';
+    diagnosePhase.className = 'phase-text';
+    statSectorsChecked.textContent = '0';
+    statErrorsFound.textContent = '0';
+    statReadSpeed.textContent = '-';
+    statWriteSpeed.textContent = '-';
+    cancelDiagnoseBtn.disabled = true;
+    updateDiagnoseButton();
+    if (!silent) {
+      loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);
+    } else {
+      loadDisksSilent(diagnoseDiskSelect, diagnoseDiskInfo);
     }
   }
 
@@ -324,6 +431,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     backupBtn.disabled = !selectedBackupDisk || !selectedBackupDestination || isBackingUp;
   }
 
+  function updateDiagnoseButton() {
+    diagnoseBtn.disabled = !selectedDiagnoseDisk || isDiagnosing;
+  }
+
   // Event listeners - Burn tab
   selectIsoBtn.addEventListener('click', async function() {
     try {
@@ -378,7 +489,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Passwort im App-Fenster abfragen
     let password;
     try {
-      password = await requestPassword('Administrator privileges required to write to USB drive.\n\nPlease enter your macOS password:');
+      password = await requestPassword('Zum Schreiben auf den USB-Stick werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
     } catch (err) {
       logBurn('Password prompt cancelled', 'warning');
       return;
@@ -502,7 +613,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let password = null;
     if (!isFilesystemMode) {
       try {
-        password = await requestPassword('Administrator privileges required to read USB drive.\n\nPlease enter your macOS password:');
+        password = await requestPassword('Zum Lesen des USB-Sticks werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
       } catch (err) {
         logBackup('Password prompt cancelled', 'warning');
         return;
@@ -573,6 +684,282 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Event listeners - Diagnose tab
+  refreshDiagnoseDisks.addEventListener('click', function() {
+    loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);
+  });
+
+  diagnoseDiskSelect.addEventListener('change', async function() {
+    if (diagnoseDiskSelect.value) {
+      selectedDiagnoseDisk = JSON.parse(diagnoseDiskSelect.value);
+      await showDiskInfo(selectedDiagnoseDisk.id, diagnoseDiskInfo, logDiagnose);
+      logDiagnose('USB selected: ' + selectedDiagnoseDisk.name + ' (' + selectedDiagnoseDisk.size + ')', 'info');
+      
+      // Load SMART data
+      await loadSmartData(selectedDiagnoseDisk.id);
+    } else {
+      selectedDiagnoseDisk = null;
+      diagnoseDiskInfo.classList.remove('visible');
+      resetSmartDisplay();
+    }
+    updateDiagnoseButton();
+  });
+  
+  // SMART data functions
+  function resetSmartDisplay() {
+    smartLoading.classList.add('hidden');
+    smartUnavailable.classList.add('hidden');
+    smartData.classList.add('hidden');
+    smartWarning.classList.add('hidden');
+    smartStatusBadge.classList.add('hidden');
+  }
+  
+  async function loadSmartData(diskId) {
+    resetSmartDisplay();
+    smartLoading.classList.remove('hidden');
+    
+    try {
+      const data = await invoke('get_smart_data', { diskId: diskId });
+      
+      smartLoading.classList.add('hidden');
+      
+      if (!data.available) {
+        smartUnavailable.classList.remove('hidden');
+        if (data.error_message) {
+          smartUnavailableMsg.textContent = data.error_message;
+        }
+        // Update badge
+        smartStatusBadge.textContent = 'N/A';
+        smartStatusBadge.className = 'status-badge unavailable';
+        smartStatusBadge.classList.remove('hidden');
+        logDiagnose('SMART: ' + (data.error_message || 'Not available'), 'info');
+        return;
+      }
+      
+      // Show SMART data
+      smartData.classList.remove('hidden');
+      
+      // Health status
+      smartHealthValue.textContent = data.health_status;
+      if (data.health_status.includes('PASSED') || data.health_status.includes('✅')) {
+        smartHealthValue.className = 'smart-health-value passed';
+        smartStatusBadge.textContent = 'OK ✅';
+        smartStatusBadge.className = 'status-badge passed';
+      } else if (data.health_status.includes('FAILED') || data.health_status.includes('❌')) {
+        smartHealthValue.className = 'smart-health-value failed';
+        smartStatusBadge.textContent = 'FAIL ❌';
+        smartStatusBadge.className = 'status-badge failed';
+      } else {
+        smartHealthValue.className = 'smart-health-value';
+        smartStatusBadge.textContent = data.health_status;
+        smartStatusBadge.className = 'status-badge info';
+      }
+      smartStatusBadge.classList.remove('hidden');
+      
+      // Details
+      smartTempValue.textContent = data.temperature !== null ? data.temperature + '°C' : '-';
+      smartHoursValue.textContent = data.power_on_hours !== null ? data.power_on_hours.toLocaleString() + ' h' : '-';
+      smartCyclesValue.textContent = data.power_cycle_count !== null ? data.power_cycle_count.toLocaleString() : '-';
+      
+      // Critical sectors
+      const reallocated = data.reallocated_sectors;
+      const pending = data.pending_sectors;
+      const uncorrectable = data.uncorrectable_sectors;
+      
+      smartReallocatedValue.textContent = reallocated !== null ? reallocated : '-';
+      smartPendingValue.textContent = pending !== null ? pending : '-';
+      smartUncorrectableValue.textContent = uncorrectable !== null ? uncorrectable : '-';
+      
+      // Highlight warnings
+      if (reallocated !== null && reallocated > 0) {
+        smartReallocatedValue.className = 'smart-detail-value warning';
+      } else {
+        smartReallocatedValue.className = 'smart-detail-value';
+      }
+      
+      if (pending !== null && pending > 0) {
+        smartPendingValue.className = 'smart-detail-value warning';
+      } else {
+        smartPendingValue.className = 'smart-detail-value';
+      }
+      
+      if (uncorrectable !== null && uncorrectable > 0) {
+        smartUncorrectableValue.className = 'smart-detail-value critical';
+      } else {
+        smartUncorrectableValue.className = 'smart-detail-value';
+      }
+      
+      // Source info
+      if (data.source === 'smartctl') {
+        smartSource.textContent = 'Datenquelle: smartmontools (smartctl)';
+      } else if (data.source === 'diskutil') {
+        smartSource.textContent = 'Datenquelle: macOS diskutil (eingeschränkt)';
+      }
+      
+      // Show warning if there's additional info
+      if (data.error_message) {
+        smartWarning.textContent = 'ℹ️ ' + data.error_message;
+        smartWarning.classList.remove('hidden');
+      }
+      
+      logDiagnose('SMART Status: ' + data.health_status + ' (via ' + data.source + ')', 'success');
+      
+    } catch (err) {
+      smartLoading.classList.add('hidden');
+      smartUnavailable.classList.remove('hidden');
+      smartUnavailableMsg.textContent = 'Fehler beim Laden der SMART-Daten: ' + err;
+      logDiagnose('SMART error: ' + err, 'error');
+    }
+  }
+
+  // Show/hide warning based on test mode
+  diagnoseModeInputs.forEach(function(input) {
+    input.addEventListener('change', function() {
+      const mode = document.querySelector('input[name="diagnose-mode"]:checked').value;
+      if (mode === 'surface') {
+        diagnoseWarning.classList.add('hidden');
+      } else {
+        diagnoseWarning.classList.remove('hidden');
+      }
+    });
+  });
+
+  diagnoseBtn.addEventListener('click', async function() {
+    if (!selectedDiagnoseDisk) return;
+    
+    const mode = document.querySelector('input[name="diagnose-mode"]:checked').value;
+    const isDestructive = (mode === 'full' || mode === 'speed');
+    
+    // Confirmation for destructive tests
+    if (isDestructive) {
+      const confirmed = await requestConfirm(
+        '⚠️ WARNING!',
+        'All data on "' + selectedDiagnoseDisk.name + '" (' + selectedDiagnoseDisk.id + ') will be PERMANENTLY deleted!\n\nContinue?',
+        'Yes, delete',
+        'Cancel'
+      );
+      
+      if (!confirmed) {
+        logDiagnose('Test cancelled', 'warning');
+        return;
+      }
+    }
+
+    // Request password for raw device access
+    let password;
+    try {
+      password = await requestPassword('Zum Zugriff auf den USB-Stick werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
+    } catch (err) {
+      logDiagnose('Password prompt cancelled', 'warning');
+      return;
+    }
+    
+    // Start diagnose
+    isDiagnosing = true;
+    diagnoseCancelled = false;
+    diagnoseBtn.disabled = true;
+    cancelDiagnoseBtn.disabled = false;
+    diagnoseProgressFill.style.width = '0%';
+    diagnoseProgressText.textContent = '0%';
+    statSectorsChecked.textContent = '0';
+    statErrorsFound.textContent = '0';
+    statReadSpeed.textContent = '-';
+    statWriteSpeed.textContent = '-';
+    statsSummaryBadge.classList.add('hidden');
+    
+    const modeNames = { surface: 'Surface Scan', full: 'Full Test', speed: 'Speed Test' };
+    logDiagnose('Starting ' + modeNames[mode] + '...', 'info');
+    diagnosePhase.textContent = 'Initializing...';
+    diagnosePhase.className = 'phase-text';
+    
+    try {
+      let result;
+      logDiagnose('Calling test function: ' + mode, 'info');
+      
+      if (mode === 'surface') {
+        result = await invoke('diagnose_surface_scan', {
+          diskId: selectedDiagnoseDisk.id,
+          password: password
+        });
+      } else if (mode === 'full') {
+        logDiagnose('Invoking diagnose_full_test...', 'info');
+        result = await invoke('diagnose_full_test', {
+          diskId: selectedDiagnoseDisk.id,
+          password: password
+        });
+        logDiagnose('diagnose_full_test returned', 'info');
+      } else if (mode === 'speed') {
+        result = await invoke('diagnose_speed_test', {
+          diskId: selectedDiagnoseDisk.id,
+          password: password
+        });
+      }
+      
+      // Display results
+      if (result.success) {
+        logDiagnose('✓ ' + result.message, 'success');
+        diagnosePhase.textContent = '✓ Test completed!';
+        diagnosePhase.className = 'phase-text success';
+        statsSummaryBadge.textContent = '✓ OK';
+        statsSummaryBadge.className = 'status-badge passed';
+        statsSummaryBadge.classList.remove('hidden');
+      } else {
+        logDiagnose('✗ ' + result.message, 'error');
+        diagnosePhase.textContent = '✗ Test failed!';
+        diagnosePhase.className = 'phase-text error';
+        statsSummaryBadge.textContent = '✗ Errors';
+        statsSummaryBadge.className = 'status-badge failed';
+        statsSummaryBadge.classList.remove('hidden');
+      }
+      
+      // Update final stats
+      statSectorsChecked.textContent = result.sectors_checked.toLocaleString();
+      statErrorsFound.textContent = result.errors_found.toLocaleString();
+      if (result.read_speed_mbps > 0) {
+        statReadSpeed.textContent = result.read_speed_mbps.toFixed(1) + ' MB/s';
+      }
+      if (result.write_speed_mbps > 0) {
+        statWriteSpeed.textContent = result.write_speed_mbps.toFixed(1) + ' MB/s';
+      }
+      
+      // Log bad sectors if any
+      if (result.bad_sectors && result.bad_sectors.length > 0) {
+        logDiagnose('Bad sectors found: ' + result.bad_sectors.slice(0, 20).join(', ') + 
+                    (result.bad_sectors.length > 20 ? '... and ' + (result.bad_sectors.length - 20) + ' more' : ''), 'warning');
+      }
+      
+      diagnoseProgressFill.style.width = '100%';
+      diagnoseProgressText.textContent = '100%';
+      
+      isDiagnosing = false;
+      diagnoseBtn.disabled = false;
+      cancelDiagnoseBtn.disabled = true;
+      loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);
+    } catch (err) {
+      if (diagnoseCancelled) {
+        logDiagnose('✗ Test cancelled', 'warning');
+        diagnosePhase.textContent = 'Cancelled';
+        diagnosePhase.className = 'phase-text error';
+      } else {
+        logDiagnose('Error: ' + err, 'error');
+        diagnosePhase.textContent = 'Error!';
+        diagnosePhase.className = 'phase-text error';
+      }
+      resetDiagnoseState(true);
+    }
+  });
+
+  cancelDiagnoseBtn.addEventListener('click', async function() {
+    diagnoseCancelled = true;
+    cancelDiagnoseBtn.disabled = true;
+    try {
+      await invoke('cancel_diagnose');
+      logDiagnose('Cancelling...', 'warning');
+    } catch (err) {
+      logDiagnose('Cancel error: ' + err, 'error');
+    }
+  });
+
   // Listen for progress events
   listen('progress', function(event) {
     const percent = event.payload.percent;
@@ -614,6 +1001,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Listen for diagnose progress events
+  listen('diagnose_progress', function(event) {
+    const payload = event.payload;
+    diagnoseProgressFill.style.width = payload.percent + '%';
+    diagnoseProgressText.textContent = payload.percent + '%';
+    diagnosePhase.textContent = payload.phase + ': ' + payload.status;
+    
+    // Update stats in real-time
+    statSectorsChecked.textContent = payload.sectors_checked.toLocaleString();
+    statErrorsFound.textContent = payload.errors_found.toLocaleString();
+    if (payload.read_speed_mbps > 0) {
+      statReadSpeed.textContent = payload.read_speed_mbps.toFixed(1) + ' MB/s';
+    }
+    if (payload.write_speed_mbps > 0) {
+      statWriteSpeed.textContent = payload.write_speed_mbps.toFixed(1) + ' MB/s';
+    }
+  });
+
   // Listen for menu events
   listen('menu-action', function(event) {
     const action = event.payload;
@@ -621,6 +1026,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'refresh':
         loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
         loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
+        loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);
         break;
       case 'select_iso':
         selectIsoBtn.click();
@@ -634,15 +1040,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'tab_backup':
         document.querySelector('[data-tab="backup"]').click();
         break;
+      case 'tab_diagnose':
+        document.querySelector('[data-tab="diagnose"]').click();
+        break;
       case 'start_burn':
         if (!burnBtn.disabled) burnBtn.click();
         break;
       case 'start_backup':
         if (!backupBtn.disabled) backupBtn.click();
         break;
+      case 'start_diagnose':
+        if (!diagnoseBtn.disabled) diagnoseBtn.click();
+        break;
       case 'cancel_action':
         if (!cancelBurnBtn.disabled) cancelBurnBtn.click();
         if (!cancelBackupBtn.disabled) cancelBackupBtn.click();
+        if (!cancelDiagnoseBtn.disabled) cancelDiagnoseBtn.click();
         break;
       case 'lang_de':
         window.i18n.setLanguage('de');
@@ -735,8 +1148,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initialize
   logBurn('BurnISO to USB ready', 'info');
   logBackup('USB Backup ready', 'info');
+  logDiagnose('USB Diagnose ready', 'info');
   loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
   loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
+  loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);
   
   // Start window state tracking
   initWindowStateTracking();

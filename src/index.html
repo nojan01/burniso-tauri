@@ -58,6 +58,7 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="burn" data-i18n="tabs.burn">ISO → USB</button>
       <button class="tab-btn" data-tab="backup" data-i18n="tabs.backup">USB → ISO</button>
+      <button class="tab-btn" data-tab="diagnose" data-i18n="tabs.diagnose">🔍 USB prüfen</button>
     </div>
 
     <!-- ISO to USB Tab -->
@@ -185,6 +186,153 @@
       <div class="section">
         <h3>📋 <span data-i18n="backup.log">Protokoll</span></h3>
         <div id="backup-log" class="log-output"></div>
+      </div>
+    </div>
+
+    <!-- USB Diagnose Tab -->
+    <div id="diagnose-tab" class="tab-content">
+      <div class="section">
+        <h3>💾 <span data-i18n="diagnose.selectUsb">USB-Stick auswählen</span></h3>
+        <div class="disk-row">
+          <select id="diagnose-disk-select">
+            <option value="" data-i18n="diagnose.selectUsbPlaceholder">-- USB-Stick wählen --</option>
+          </select>
+          <button id="refresh-diagnose-disks" class="btn secondary icon-btn" data-i18n-title="burn.refresh" title="Aktualisieren">🔄</button>
+        </div>
+        <div id="diagnose-disk-info" class="disk-info"></div>
+      </div>
+
+      <!-- SMART Status Section (Collapsible) -->
+      <div class="section collapsible" id="smart-section">
+        <h3 class="collapsible-header" id="smart-header">
+          <span class="collapse-icon">▶</span>
+          💾 <span data-i18n="diagnose.smartStatus">S.M.A.R.T. Status</span>
+          <span id="smart-status-badge" class="status-badge hidden"></span>
+        </h3>
+        <div class="collapsible-content hidden" id="smart-content">
+          <div id="smart-container" class="smart-container">
+            <div id="smart-loading" class="smart-loading hidden">
+              <span class="spinner"></span> <span data-i18n="messages.loading">Lädt...</span>
+            </div>
+            <div id="smart-unavailable" class="smart-unavailable hidden">
+              <span class="smart-icon">ℹ️</span>
+              <span id="smart-unavailable-msg" data-i18n="diagnose.smartUnavailable">SMART-Daten nicht verfügbar</span>
+            </div>
+            <div id="smart-data" class="smart-data hidden">
+              <div class="smart-health-row">
+                <span class="smart-health-label" data-i18n="diagnose.healthStatus">Gesundheitsstatus:</span>
+                <span id="smart-health-value" class="smart-health-value">-</span>
+              </div>
+              <div class="smart-details-grid">
+                <div class="smart-detail-item" id="smart-temp-item">
+                  <span class="smart-detail-label" data-i18n="diagnose.temperature">Temperatur:</span>
+                  <span id="smart-temp-value" class="smart-detail-value">-</span>
+                </div>
+                <div class="smart-detail-item" id="smart-hours-item">
+                  <span class="smart-detail-label" data-i18n="diagnose.powerOnHours">Betriebsstunden:</span>
+                  <span id="smart-hours-value" class="smart-detail-value">-</span>
+                </div>
+                <div class="smart-detail-item" id="smart-cycles-item">
+                  <span class="smart-detail-label" data-i18n="diagnose.powerCycles">Ein-/Ausschaltzyklen:</span>
+                  <span id="smart-cycles-value" class="smart-detail-value">-</span>
+                </div>
+                <div class="smart-detail-item" id="smart-reallocated-item">
+                  <span class="smart-detail-label" data-i18n="diagnose.reallocatedSectors">Umgemappte Sektoren:</span>
+                  <span id="smart-reallocated-value" class="smart-detail-value">-</span>
+                </div>
+                <div class="smart-detail-item" id="smart-pending-item">
+                  <span class="smart-detail-label" data-i18n="diagnose.pendingSectors">Wartende Sektoren:</span>
+                  <span id="smart-pending-value" class="smart-detail-value">-</span>
+                </div>
+                <div class="smart-detail-item" id="smart-uncorrectable-item">
+                  <span class="smart-detail-label" data-i18n="diagnose.uncorrectableSectors">Unkorrigierbare Sektoren:</span>
+                  <span id="smart-uncorrectable-value" class="smart-detail-value">-</span>
+                </div>
+              </div>
+              <div id="smart-source" class="smart-source"></div>
+              <div id="smart-warning" class="smart-warning hidden"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>🔧 <span data-i18n="diagnose.testType">Testmodus</span></h3>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="diagnose-mode" value="surface" checked />
+            <span class="radio-text">
+              <strong data-i18n="diagnose.surfaceScan">🔍 Surface Scan (Nur Lesen)</strong>
+              <small data-i18n="diagnose.surfaceDescription">Liest alle Sektoren und findet Lesefehler - Daten bleiben erhalten</small>
+            </span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="diagnose-mode" value="full" />
+            <span class="radio-text">
+              <strong data-i18n="diagnose.fullTest">⚠️ Volltest (Schreiben + Lesen)</strong>
+              <small data-i18n="diagnose.fullDescription">Schreibt Testmuster und vergleicht - LÖSCHT ALLE DATEN!</small>
+            </span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="diagnose-mode" value="speed" />
+            <span class="radio-text">
+              <strong data-i18n="diagnose.speedTest">⚡ Geschwindigkeitstest</strong>
+              <small data-i18n="diagnose.speedDescription">Misst Lese- und Schreibgeschwindigkeit - LÖSCHT ALLE DATEN!</small>
+            </span>
+          </label>
+        </div>
+        <div id="diagnose-warning" class="note warning hidden">
+          ⚠️ <span data-i18n="diagnose.dataWarning">WARNUNG: Dieser Test löscht alle Daten auf dem USB-Stick!</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>📊 <span data-i18n="diagnose.progress">Fortschritt</span></h3>
+        <div class="progress-container">
+          <div class="progress-bar" id="diagnose-progress">
+            <div class="progress-fill" id="diagnose-progress-fill"></div>
+          </div>
+          <span class="progress-text" id="diagnose-progress-text">0%</span>
+        </div>
+        <div id="diagnose-phase" class="phase-text"></div>
+      </div>
+
+      <div class="section collapsible" id="diagnose-stats-section">
+        <h3 class="collapsible-header" id="stats-header">
+          <span class="collapse-icon">▶</span>
+          📈 <span data-i18n="diagnose.statistics">Statistiken</span>
+          <span id="stats-summary-badge" class="status-badge hidden"></span>
+        </h3>
+        <div class="collapsible-content hidden" id="stats-content">
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="diagnose.sectorsChecked">Geprüfte Sektoren:</span>
+              <span class="stat-value" id="stat-sectors-checked">0</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="diagnose.errorsFound">Fehler gefunden:</span>
+              <span class="stat-value" id="stat-errors-found">0</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="diagnose.readSpeed">Lesegeschwindigkeit:</span>
+              <span class="stat-value" id="stat-read-speed">-</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="diagnose.writeSpeed">Schreibgeschwindigkeit:</span>
+              <span class="stat-value" id="stat-write-speed">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="button-row">
+        <button id="diagnose-btn" class="btn primary large" disabled><span data-i18n="diagnose.startTest">🔍 Test starten</span></button>
+        <button id="cancel-diagnose-btn" class="btn danger" disabled data-i18n="diagnose.cancel">Abbrechen</button>
+      </div>
+
+      <div class="section">
+        <h3>📋 <span data-i18n="diagnose.log">Protokoll</span></h3>
+        <div id="diagnose-log" class="log-output"></div>
       </div>
     </div>
   </div>
