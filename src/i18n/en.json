@@ -145,5 +145,14 @@
   },
   "common": {
     "remaining": "remaining"
+  },
+  "notifications": {
+    "burnComplete": "Burn Complete",
+    "burnSuccess": "ISO was successfully burned to USB!",
+    "backupComplete": "Backup Complete",
+    "backupSuccess": "USB was successfully backed up!",
+    "diagnoseComplete": "Test Complete",
+    "diagnoseSuccess": "USB test successful - no errors found!",
+    "diagnoseFailed": "USB test: Errors found!"
   }
 }

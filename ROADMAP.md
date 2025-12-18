@@ -14,7 +14,7 @@
   - Basierend auf aktueller Übertragungsgeschwindigkeit
   - Für Brennen, Backup und Diagnose
 
-- [ ] **macOS Benachrichtigungen**
+- [x] **macOS Benachrichtigungen**
   - Notification bei Abschluss von Vorgängen
   - "USB erfolgreich gebrannt! ✓"
   - Auch wenn App im Hintergrund

@@ -10,6 +10,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
   const { open, save } = window.__TAURI__.dialog;
+  
+  // Notification helper
+  async function sendNotification(title, body) {
+    try {
+      const { isPermissionGranted, requestPermission, sendNotification: notify } = window.__TAURI__.notification;
+      let permissionGranted = await isPermissionGranted();
+      if (!permissionGranted) {
+        const permission = await requestPermission();
+        permissionGranted = permission === 'granted';
+      }
+      if (permissionGranted) {
+        notify({ title, body });
+      }
+    } catch (err) {
+      console.log('Notification error:', err);
+    }
+  }
 
   // State
   let selectedIsoPath = '';
@@ -611,8 +628,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       logBurn(result, 'success');
       burnProgressFill.style.width = '100%';
       burnProgressText.textContent = '100%';
+      burnEta.textContent = '';
       burnPhase.textContent = doVerify ? '✓ Written and verified!' : '✓ Successfully written!';
       burnPhase.className = 'phase-text success';
+      
+      // Send notification
+      sendNotification(
+        window.i18n.t('notifications.burnComplete') || 'Brennvorgang abgeschlossen',
+        window.i18n.t('notifications.burnSuccess') || 'ISO wurde erfolgreich auf USB gebrannt!'
+      );
       
       isBurning = false;
       burnBtn.disabled = false;
@@ -745,6 +769,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       logBackup(result, 'success');
       backupProgressFill.style.width = '100%';
       backupProgressText.textContent = '100%';
+      backupEta.textContent = '';
+      
+      // Send notification
+      sendNotification(
+        window.i18n.t('notifications.backupComplete') || 'Backup abgeschlossen',
+        window.i18n.t('notifications.backupSuccess') || 'USB wurde erfolgreich gesichert!'
+      );
       
       isBackingUp = false;
       backupBtn.disabled = false;
@@ -990,13 +1021,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         logDiagnose('✓ ' + result.message, 'success');
         diagnosePhase.textContent = '✓ Test completed!';
         diagnosePhase.className = 'phase-text success';
+        diagnoseEta.textContent = '';
         statsSummaryBadge.textContent = '✓ OK';
         statsSummaryBadge.className = 'status-badge passed';
         statsSummaryBadge.classList.remove('hidden');
+        
+        // Send notification
+        sendNotification(
+          window.i18n.t('notifications.diagnoseComplete') || 'Test abgeschlossen',
+          window.i18n.t('notifications.diagnoseSuccess') || 'USB-Test erfolgreich - keine Fehler gefunden!'
+        );
       } else {
         logDiagnose('✗ ' + result.message, 'error');
         diagnosePhase.textContent = '✗ Test failed!';
         diagnosePhase.className = 'phase-text error';
+        diagnoseEta.textContent = '';
+        
+        // Send notification for errors too
+        sendNotification(
+          window.i18n.t('notifications.diagnoseComplete') || 'Test abgeschlossen',
+          window.i18n.t('notifications.diagnoseFailed') || 'USB-Test: Fehler gefunden!'
+        );
         statsSummaryBadge.textContent = '✗ Errors';
         statsSummaryBadge.className = 'status-badge failed';
         statsSummaryBadge.classList.remove('hidden');

@@ -145,5 +145,14 @@
   },
   "common": {
     "remaining": "verbleibend"
+  },
+  "notifications": {
+    "burnComplete": "Brennvorgang abgeschlossen",
+    "burnSuccess": "ISO wurde erfolgreich auf USB gebrannt!",
+    "backupComplete": "Backup abgeschlossen",
+    "backupSuccess": "USB wurde erfolgreich gesichert!",
+    "diagnoseComplete": "Test abgeschlossen",
+    "diagnoseSuccess": "USB-Test erfolgreich - keine Fehler gefunden!",
+    "diagnoseFailed": "USB-Test: Fehler gefunden!"
   }
 }
