@@ -251,6 +251,92 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // ===== DRAG & DROP FOR ISO FILES =====
+  const dropOverlay = document.getElementById('drop-overlay');
+  const container = document.querySelector('.container');
+  const fileInputRow = document.querySelector('.file-input-row');
+  let dragCounter = 0;
+
+  // Helper function to check if drag contains files
+  function containsFiles(event) {
+    if (event.dataTransfer.types) {
+      for (let i = 0; i < event.dataTransfer.types.length; i++) {
+        if (event.dataTransfer.types[i] === 'Files') {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Helper to set ISO file from path
+  function setIsoFile(path) {
+    if (path && (path.toLowerCase().endsWith('.iso') || path.toLowerCase().endsWith('.img'))) {
+      selectedIsoPath = path;
+      isoPathInput.value = path;
+      logBurn('ISO file selected: ' + path.split('/').pop(), 'info');
+      updateBurnButton();
+      
+      // Switch to burn tab if not already there
+      const burnTab = document.querySelector('[data-tab="burn"]');
+      if (!burnTab.classList.contains('active')) {
+        burnTab.click();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  // Prevent default drag behaviors on window
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    document.body.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    }, false);
+  });
+
+  // Drag enter - show overlay
+  document.body.addEventListener('dragenter', (e) => {
+    if (!containsFiles(e)) return;
+    dragCounter++;
+    if (dragCounter === 1) {
+      dropOverlay.classList.remove('hidden');
+      container.classList.add('drag-over');
+    }
+  });
+
+  // Drag leave - hide overlay when leaving window
+  document.body.addEventListener('dragleave', (e) => {
+    dragCounter--;
+    if (dragCounter === 0) {
+      dropOverlay.classList.add('hidden');
+      container.classList.remove('drag-over');
+    }
+  });
+
+  // Drop - handle the file
+  document.body.addEventListener('drop', async (e) => {
+    dragCounter = 0;
+    dropOverlay.classList.add('hidden');
+    container.classList.remove('drag-over');
+    
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      const file = files[0];
+      // In Tauri, we need to get the file path
+      // The File object has a path property in Tauri
+      const filePath = file.path || file.name;
+      
+      if (filePath) {
+        if (setIsoFile(filePath)) {
+          logBurn('✓ ISO file dropped: ' + file.name, 'success');
+        } else {
+          logBurn('⚠ Only .iso and .img files are supported', 'warning');
+        }
+      }
+    }
+  });
+
   // Logging functions
   function logBurn(message, type) {
     type = type || 'info';

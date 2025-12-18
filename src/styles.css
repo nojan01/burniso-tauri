@@ -988,3 +988,66 @@ body {
   font-size: 12px;
   margin-top: 8px;
 }
+
+/* Drag & Drop Overlay */
+.drop-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 122, 204, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  pointer-events: none;
+  animation: dropFadeIn 0.15s ease-out;
+}
+
+@keyframes dropFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.drop-overlay.hidden {
+  display: none;
+}
+
+.drop-content {
+  text-align: center;
+  color: white;
+}
+
+.drop-icon {
+  font-size: 80px;
+  margin-bottom: 20px;
+  animation: dropBounce 0.5s ease-out;
+}
+
+@keyframes dropBounce {
+  0% { transform: scale(0.5); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+
+.drop-text {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+/* Container with drag-over state */
+.container.drag-over {
+  opacity: 0.7;
+}
+
+/* File input row with drop highlight */
+.file-input-row.drop-target {
+  border: 2px dashed var(--accent-blue);
+  border-radius: 8px;
+  padding: 8px;
+  margin: -8px;
+  background: rgba(0, 122, 204, 0.1);
+  transition: all 0.2s ease;
+}

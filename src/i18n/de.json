@@ -3,6 +3,11 @@
     "title": "BurnISO to USB",
     "subtitle": "ISO ↔ USB Images verwalten"
   },
+  "dragDrop": {
+    "dropHere": "ISO-Datei hier ablegen",
+    "dropSuccess": "ISO-Datei geladen",
+    "dropError": "Nur .iso und .img Dateien werden unterstützt"
+  },
   "tabs": {
     "burn": "ISO → USB",
     "backup": "USB → ISO",
