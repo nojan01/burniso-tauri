@@ -19,10 +19,10 @@
   - "USB erfolgreich gebrannt! ✓"
   - Auch wenn App im Hintergrund
 
-- [ ] **Dock-Fortschritt**
+- [x] **Dock-Fortschritt**
   - macOS Dock-Icon zeigt Fortschrittsbalken
   - Wie bei Downloads im Finder
-  - Erfordert `tauri-plugin-dock` oder native API
+  - Nutzt Tauri Window setProgressBar API
 
 - [ ] **Letzte Dateien merken**
   - Zuletzt verwendete ISO-Dateien speichern

@@ -10,6 +10,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
   const { open, save } = window.__TAURI__.dialog;
+  const { getCurrentWindow, ProgressBarStatus } = window.__TAURI__.window;
+
+  // Dock progress helper (macOS dock icon progress bar)
+  const appWindow = getCurrentWindow();
+  async function setDockProgress(percent, status = 'normal') {
+    try {
+      if (status === 'none') {
+        await appWindow.setProgressBar({ status: ProgressBarStatus.None });
+      } else if (status === 'error') {
+        await appWindow.setProgressBar({ status: ProgressBarStatus.Error, progress: percent });
+      } else if (status === 'paused') {
+        await appWindow.setProgressBar({ status: ProgressBarStatus.Paused, progress: percent });
+      } else {
+        await appWindow.setProgressBar({ status: ProgressBarStatus.Normal, progress: percent });
+      }
+    } catch (err) {
+      console.log('Dock progress error:', err);
+    }
+  }
   
   // Notification helper
   async function sendNotification(title, body) {
@@ -378,6 +397,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     burnPhase.textContent = '';
     burnPhase.className = 'phase-text';
     cancelBurnBtn.disabled = true;
+    // Clear dock progress bar
+    setDockProgress(0, 'none');
     updateBurnButton();
     if (!silent) {
       loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
@@ -394,6 +415,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     backupProgressText.textContent = '0%';
     backupEta.textContent = '';
     cancelBackupBtn.disabled = true;
+    // Clear dock progress bar
+    setDockProgress(0, 'none');
     updateBackupButton();
     if (!silent) {
       loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
@@ -416,6 +439,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     statReadSpeed.textContent = '-';
     statWriteSpeed.textContent = '-';
     cancelDiagnoseBtn.disabled = true;
+    // Clear dock progress bar
+    setDockProgress(0, 'none');
     updateDiagnoseButton();
     if (!silent) {
       loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);
@@ -771,6 +796,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       backupProgressText.textContent = '100%';
       backupEta.textContent = '';
       
+      // Clear dock progress bar on success
+      setDockProgress(100, 'none');
+      
       // Send notification
       sendNotification(
         window.i18n.t('notifications.backupComplete') || 'Backup abgeschlossen',
@@ -1066,6 +1094,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       diagnoseProgressFill.style.width = '100%';
       diagnoseProgressText.textContent = '100%';
       
+      // Clear dock progress bar on success
+      setDockProgress(100, 'none');
+      
       isDiagnosing = false;
       diagnoseBtn.disabled = false;
       cancelDiagnoseBtn.disabled = true;
@@ -1100,6 +1131,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const percent = event.payload.percent;
     const status = event.payload.status;
     const operation = event.payload.operation;
+    
+    // Update dock progress bar
+    setDockProgress(percent);
     
     if (operation === 'burn') {
       burnProgressFill.style.width = percent + '%';
@@ -1136,10 +1170,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       burnPhase.textContent = '✓ Successfully completed!';
       burnPhase.className = 'phase-text success';
       burnEta.textContent = '';
+      // Clear dock progress bar on success
+      setDockProgress(100, 'none');
     } else if (phase === 'error') {
       burnPhase.textContent = '✗ Verification failed!';
       burnPhase.className = 'phase-text error';
       burnEta.textContent = '';
+      // Show error state in dock, then clear
+      setDockProgress(100, 'error');
+      setTimeout(() => setDockProgress(0, 'none'), 2000);
     }
   });
 
@@ -1150,6 +1189,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     diagnoseProgressText.textContent = payload.percent + '%';
     diagnoseEta.textContent = calculateEta(diagnoseStartTime, payload.percent);
     diagnosePhase.textContent = payload.phase + ': ' + payload.status;
+    
+    // Update dock progress bar for diagnose
+    setDockProgress(payload.percent);
     
     // Update stats in real-time
     statSectorsChecked.textContent = payload.sectors_checked.toLocaleString();
