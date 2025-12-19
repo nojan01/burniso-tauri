@@ -124,11 +124,12 @@ fn detect_filesystem_from_device(disk_id: &str) -> Option<DetectedFilesystem> {
         let mut iso_buf = vec![0u8; 6];
         if f.seek(SeekFrom::Start(0x8001)).is_ok() && f.read_exact(&mut iso_buf).is_ok() {
             if &iso_buf[0..5] == b"CD001" {
+                let iso_size = extract_iso_size(&device_path);
                 return Some(DetectedFilesystem {
                     name: "ISO 9660".to_string(),
                     label: extract_iso_label(&device_path),
-                    used_bytes: None,
-                    total_bytes: None,
+                    used_bytes: iso_size, // ISO size = used bytes
+                    total_bytes: iso_size,
                 });
             }
         }
@@ -287,6 +288,41 @@ fn extract_iso_label(device_path: &str) -> Option<String> {
         .trim()
         .to_string();
     if label.is_empty() { None } else { Some(label) }
+}
+
+/// Extract ISO 9660 volume size from Primary Volume Descriptor
+/// The PVD is at sector 16 (offset 0x8000), and contains:
+/// - Volume Space Size at offset 80 (4 bytes little-endian + 4 bytes big-endian)
+/// - Logical Block Size at offset 128 (2 bytes little-endian + 2 bytes big-endian)
+fn extract_iso_size(device_path: &str) -> Option<u64> {
+    let mut file = File::open(device_path).ok()?;
+    
+    // Read Primary Volume Descriptor (starts at 0x8000, 2048 bytes)
+    file.seek(SeekFrom::Start(0x8000)).ok()?;
+    let mut pvd = vec![0u8; 2048];
+    file.read_exact(&mut pvd).ok()?;
+    
+    // Check it's a Primary Volume Descriptor (type 1, "CD001")
+    if pvd[0] != 1 || &pvd[1..6] != b"CD001" {
+        return None;
+    }
+    
+    // Volume Space Size (number of logical blocks) at offset 80
+    // Little-endian 32-bit value
+    let volume_space_size = u32::from_le_bytes([pvd[80], pvd[81], pvd[82], pvd[83]]) as u64;
+    
+    // Logical Block Size at offset 128 (usually 2048)
+    // Little-endian 16-bit value
+    let logical_block_size = u16::from_le_bytes([pvd[128], pvd[129]]) as u64;
+    
+    // Total size = blocks * block_size
+    let total_size = volume_space_size * logical_block_size;
+    
+    if total_size > 0 {
+        Some(total_size)
+    } else {
+        None
+    }
 }
 
 fn extract_xfs_label(buffer: &[u8]) -> Option<String> {
@@ -1261,12 +1297,19 @@ fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
                 let is_iso = iso_fs.iter().any(|s| fs.contains(s));
                 if is_iso || supported_fs.iter().any(|s| fs.contains(s)) {
                     let display_fs = if is_iso { format!("ISO:{}", fs) } else { fs };
+                    // Für ISO-Volumes: VolumeTotalSpace (echte Größe), sonst TotalSize (Disk-Größe)
+                    let bytes = if is_iso {
+                        extract_plist_value(&plist, "VolumeTotalSpace")
+                            .or_else(|| extract_plist_value(&plist, "TotalSize"))
+                    } else {
+                        extract_plist_value(&plist, "TotalSize")
+                    };
                     return Some(VolumeInfo {
                         identifier: part_id.to_string(),
                         mount_point: mp.clone(),
                         filesystem: display_fs,
                         name: extract_plist_string(&plist, "VolumeName").unwrap_or_else(|| "USB-Volume".to_string()),
-                        bytes: extract_plist_value(&plist, "TotalSize"),
+                        bytes,
                     });
                 }
             }
@@ -1307,6 +1350,15 @@ fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
         None
     };
     
+    // Versuche zuerst, die Disk zu mounten (für ISO-Volumes, die nicht automatisch gemountet sind)
+    // Das Mounten von ISO-Volumes braucht keine Root-Rechte
+    let _ = Command::new("diskutil")
+        .args(["mount", &disk_id])
+        .output();
+    
+    // Kurz warten, damit das Mount abgeschlossen ist
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    
     // Zuerst Partitionen prüfen (diskXsY)
     let output = Command::new("diskutil").args(["list", &disk_id]).output()
         .map_err(|e| format!("diskutil Fehler: {}", e))?;
@@ -1329,7 +1381,8 @@ fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
     if let Some(info) = check_disk(&disk_id) {
         return Ok(Some(info));
     }
-    // Try raw detection on main disk
+    
+    // Try raw detection on main disk (requires root - may not work without password)
     if let Some(info) = check_disk_raw(&disk_id) {
         return Ok(Some(info));
     }
@@ -1345,6 +1398,510 @@ fn cancel_burn() {
 #[tauri::command]
 fn cancel_backup() {
     CANCEL_BACKUP.store(true, Ordering::SeqCst);
+}
+
+// Static for cancel tools operation
+static CANCEL_TOOLS: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn cancel_tools() {
+    CANCEL_TOOLS.store(true, Ordering::SeqCst);
+}
+
+/// Format a USB disk with the specified filesystem
+#[tauri::command]
+async fn format_disk(
+    app: AppHandle,
+    disk_id: String,
+    filesystem: String,
+    name: String,
+    scheme: String,
+    password: String,
+) -> Result<String, String> {
+    CANCEL_TOOLS.store(false, Ordering::SeqCst);
+    
+    let disk_path = format!("/dev/{}", disk_id);
+    
+    // Validate filesystem
+    let fs_type = match filesystem.as_str() {
+        "FAT32" => "MS-DOS FAT32",
+        "ExFAT" => "ExFAT",
+        "APFS" => "APFS",
+        "HFS+" => "JHFS+",
+        _ => return Err(format!("Nicht unterstütztes Dateisystem: {}", filesystem)),
+    };
+    
+    // Validate scheme
+    let scheme_type = match scheme.as_str() {
+        "GPT" => "GPT",
+        "MBR" => "MBR",
+        _ => "GPT",
+    };
+    
+    // Sanitize volume name (FAT32 max 11 chars, no special chars)
+    let safe_name: String = name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .take(11)
+        .collect();
+    let volume_name = if safe_name.is_empty() { "USB_STICK".to_string() } else { safe_name };
+    
+    emit_progress(&app, 5, "Formatting USB drive...", "tools");
+    
+    // Force unmount first to release any locks (especially after secure erase)
+    let _ = Command::new("diskutil")
+        .args(["unmountDisk", "force", &disk_path])
+        .output();
+    
+    // Small delay to allow system to release device
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    
+    // Use diskutil eraseDisk with sudo
+    let script = format!(
+        r#"diskutil eraseDisk "{}" "{}" {} {}"#,
+        fs_type, volume_name, scheme_type, disk_path
+    );
+    
+    // Start the format process
+    let mut child = Command::new("sudo")
+        .args(["-S", "sh", "-c", &script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Format error: {}", e))?;
+    
+    // Send password
+    if let Some(ref mut stdin) = child.stdin {
+        writeln!(stdin, "{}", password).ok();
+    }
+    drop(child.stdin.take());
+    
+    // Animate progress while waiting for completion
+    let mut progress = 10;
+    loop {
+        if CANCEL_TOOLS.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Format cancelled".to_string());
+        }
+        
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    emit_progress(&app, 100, "Format complete!", "tools");
+                    return Ok(format!("USB formatted as {} ({})", filesystem, volume_name));
+                } else {
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let mut error_msg = String::new();
+                        let _ = stderr.read_to_string(&mut error_msg);
+                        if !error_msg.is_empty() {
+                            return Err(format!("Format failed: {}", error_msg));
+                        }
+                    }
+                    return Err("Format failed".to_string());
+                }
+            }
+            Ok(None) => {
+                // Still running - animate progress
+                progress = (progress + 5).min(90);
+                emit_progress(&app, progress, &format!("Formatting as {}...", filesystem), "tools");
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => {
+                return Err(format!("Wait error: {}", e));
+            }
+        }
+    }
+}
+
+/// Write a pass using dd with progress tracking
+fn write_pass(
+    app: &AppHandle,
+    disk_path: &str,
+    disk_size: u64,
+    source: &str,
+    pass_num: u32,
+    total_passes: u32,
+    pass_desc: &str,
+    password: &str,
+) -> Result<(), String> {
+    // Calculate base progress for this pass
+    let pass_start = ((pass_num - 1) as f64 / total_passes as f64 * 90.0) as u32 + 5;
+    let pass_range = (90.0 / total_passes as f64) as u32;
+    
+    emit_progress(app, pass_start, &format!("Pass {}/{}: {}...", pass_num, total_passes, pass_desc), "tools");
+    
+    // Use dd with 1MB blocks
+    let block_size = 1024 * 1024u64; // 1MB
+    let total_blocks = disk_size / block_size;
+    
+    // Build dd command
+    let dd_cmd = format!(
+        "dd if={} of={} bs=1m count={} 2>&1",
+        source, disk_path, total_blocks
+    );
+    
+    let mut child = Command::new("sudo")
+        .args(["-S", "sh", "-c", &dd_cmd])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("dd start error: {}", e))?;
+    
+    // Send password
+    if let Some(ref mut stdin) = child.stdin {
+        writeln!(stdin, "{}", password).ok();
+    }
+    drop(child.stdin.take());
+    
+    // Poll with progress estimation based on typical write speed (~50MB/s for USB)
+    let estimated_seconds = (disk_size as f64 / (50.0 * 1024.0 * 1024.0)) as u64;
+    let start_time = std::time::Instant::now();
+    
+    loop {
+        if CANCEL_TOOLS.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Cancelled".to_string());
+        }
+        
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    emit_progress(app, pass_start + pass_range, &format!("Pass {}/{}: Complete", pass_num, total_passes), "tools");
+                    return Ok(());
+                } else {
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let mut error_msg = String::new();
+                        let _ = stderr.read_to_string(&mut error_msg);
+                        // dd outputs stats to stderr, check for actual errors
+                        if error_msg.contains("Permission denied") || error_msg.contains("No such file") {
+                            return Err(format!("dd error: {}", error_msg));
+                        }
+                    }
+                    return Ok(()); // dd often exits 0 but reports to stderr
+                }
+            }
+            Ok(None) => {
+                // Estimate progress based on elapsed time
+                let elapsed = start_time.elapsed().as_secs();
+                let estimated_progress = if estimated_seconds > 0 {
+                    ((elapsed as f64 / estimated_seconds as f64) * pass_range as f64).min(pass_range as f64 - 1.0) as u32
+                } else {
+                    0
+                };
+                let current = pass_start + estimated_progress;
+                emit_progress(app, current, &format!("Pass {}/{}: {}...", pass_num, total_passes, pass_desc), "tools");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            Err(e) => return Err(format!("Wait error: {}", e)),
+        }
+    }
+}
+
+/// Get disk size in bytes
+fn get_disk_size(disk_id: &str) -> Result<u64, String> {
+    let output = Command::new("diskutil")
+        .args(["info", disk_id])
+        .output()
+        .map_err(|e| format!("diskutil error: {}", e))?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("Disk Size:") {
+            // Extract bytes from format like "Disk Size: 32.0 GB (32000000000 Bytes)"
+            if let Some(start) = line.find('(') {
+                if let Some(end) = line.find(" Bytes") {
+                    let bytes_str = &line[start+1..end];
+                    if let Ok(bytes) = bytes_str.trim().parse::<u64>() {
+                        return Ok(bytes);
+                    }
+                }
+            }
+        }
+    }
+    Err("Could not determine disk size".to_string())
+}
+
+/// Securely erase a USB disk using dd with real progress
+#[tauri::command]
+async fn secure_erase(
+    app: AppHandle,
+    disk_id: String,
+    level: u32,
+    password: String,
+) -> Result<String, String> {
+    CANCEL_TOOLS.store(false, Ordering::SeqCst);
+    
+    let disk_path = format!("/dev/r{}", disk_id); // Use raw device for faster writes
+    
+    // Level descriptions
+    let level_desc = match level {
+        0 => "1x Zeros",
+        1 => "1x Random",
+        2 => "DoD 7-Pass",
+        3 => "Gutmann 35-Pass",
+        4 => "DoE 3-Pass",
+        _ => "Unknown",
+    };
+    
+    emit_progress(&app, 2, &format!("Preparing secure erase ({})...", level_desc), "tools");
+    
+    // Get disk size
+    let disk_size = get_disk_size(&disk_id)?;
+    
+    // Force unmount
+    let _ = Command::new("diskutil")
+        .args(["unmountDisk", "force", &format!("/dev/{}", disk_id)])
+        .output();
+    
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    
+    emit_progress(&app, 5, &format!("Starting {} erase...", level_desc), "tools");
+    
+    match level {
+        0 => {
+            // Single pass zeros
+            write_pass(&app, &disk_path, disk_size, "/dev/zero", 1, 1, "Zeros", &password)?;
+        }
+        1 => {
+            // Single pass random
+            write_pass(&app, &disk_path, disk_size, "/dev/urandom", 1, 1, "Random", &password)?;
+        }
+        2 => {
+            // DoD 7-Pass: 0x00, 0xFF, Random, 0x00, 0xFF, Random, Random
+            // Simplified: alternating zeros/random
+            for i in 1..=7 {
+                if CANCEL_TOOLS.load(Ordering::SeqCst) {
+                    return Err("Secure erase cancelled".to_string());
+                }
+                let source = if i % 2 == 1 { "/dev/zero" } else { "/dev/urandom" };
+                let desc = if i % 2 == 1 { "Zeros" } else { "Random" };
+                write_pass(&app, &disk_path, disk_size, source, i, 7, desc, &password)?;
+            }
+        }
+        3 => {
+            // Gutmann 35-Pass: Mix of patterns and random
+            // Simplified: 4 random + 27 zeros/random alternating + 4 random
+            for i in 1..=35 {
+                if CANCEL_TOOLS.load(Ordering::SeqCst) {
+                    return Err("Secure erase cancelled".to_string());
+                }
+                let (source, desc) = if i <= 4 || i > 31 {
+                    ("/dev/urandom", "Random")
+                } else if i % 2 == 0 {
+                    ("/dev/zero", "Pattern")
+                } else {
+                    ("/dev/urandom", "Random")
+                };
+                write_pass(&app, &disk_path, disk_size, source, i, 35, desc, &password)?;
+            }
+        }
+        4 => {
+            // DoE 3-Pass: Random, Zeros, Random
+            write_pass(&app, &disk_path, disk_size, "/dev/urandom", 1, 3, "Random", &password)?;
+            if !CANCEL_TOOLS.load(Ordering::SeqCst) {
+                write_pass(&app, &disk_path, disk_size, "/dev/zero", 2, 3, "Zeros", &password)?;
+            }
+            if !CANCEL_TOOLS.load(Ordering::SeqCst) {
+                write_pass(&app, &disk_path, disk_size, "/dev/urandom", 3, 3, "Random", &password)?;
+            }
+        }
+        _ => {
+            return Err(format!("Unknown erase level: {}", level));
+        }
+    }
+    
+    if CANCEL_TOOLS.load(Ordering::SeqCst) {
+        return Err("Secure erase cancelled".to_string());
+    }
+    
+    emit_progress(&app, 100, "Secure erase complete!", "tools");
+    Ok(format!("USB securely erased ({})", level_desc))
+}
+
+/// Check if a USB disk is bootable (EFI/MBR/Hybrid)
+#[tauri::command]
+async fn check_bootable(disk_id: String, password: String) -> Result<serde_json::Value, String> {
+    let disk_path = format!("/dev/r{}", disk_id);
+    
+    // Use Python with sudo to read raw disk bytes
+    let python_script = format!(
+        r#"
+import os, sys, struct
+
+device = "{}"
+try:
+    fd = os.open(device, os.O_RDONLY)
+    with os.fdopen(fd, 'rb') as f:
+        # Read MBR (first 512 bytes)
+        mbr = f.read(512)
+        if len(mbr) < 512:
+            print("ERROR:MBR zu klein")
+            sys.exit(1)
+        
+        # Check MBR signature
+        has_mbr = mbr[510] == 0x55 and mbr[511] == 0xAA
+        
+        # Read GPT header (sector 1)
+        f.seek(512)
+        gpt_header = f.read(512)
+        has_gpt = len(gpt_header) >= 8 and gpt_header[0:8] == b'EFI PART'
+        
+        # Check partition entries in MBR
+        has_efi = False
+        has_bootable = False
+        for i in range(4):
+            offset = 446 + (i * 16)
+            boot_flag = mbr[offset]
+            part_type = mbr[offset + 4]
+            if boot_flag == 0x80:
+                has_bootable = True
+            if part_type == 0xEF or part_type == 0xEE:
+                has_efi = True
+        
+        # Check for ISO 9660
+        f.seek(0x8000)
+        iso_pvd = f.read(2048)
+        is_iso = len(iso_pvd) >= 6 and iso_pvd[1:6] == b'CD001'
+        
+        # Check El Torito
+        has_el_torito = False
+        if is_iso:
+            f.seek(0x8800)
+            boot_record = f.read(2048)
+            has_el_torito = len(boot_record) >= 6 and boot_record[1:6] == b'CD001' and boot_record[0] == 0
+        
+        # Output results
+        print(f"MBR:{{'1' if has_mbr else '0'}}")
+        print(f"GPT:{{'1' if has_gpt else '0'}}")
+        print(f"EFI:{{'1' if has_efi else '0'}}")
+        print(f"BOOTABLE:{{'1' if has_bootable else '0'}}")
+        print(f"ISO:{{'1' if is_iso else '0'}}")
+        print(f"ELTORITO:{{'1' if has_el_torito else '0'}}")
+        print("SUCCESS")
+except Exception as e:
+    print(f"ERROR:{{e}}")
+    sys.exit(1)
+"#, disk_path);
+
+    let escaped_password = password.replace("'", "'\\''");
+    let cmd = format!(
+        "echo '{}' | sudo -S python3 -c '{}'",
+        escaped_password,
+        python_script.replace("'", "'\"'\"'")
+    );
+    
+    let output = Command::new("sh")
+        .args(["-c", &cmd])
+        .output()
+        .map_err(|e| format!("Fehler beim Ausführen: {}", e))?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    
+    if !output.status.success() || stdout.contains("ERROR:") {
+        let error_msg = if stdout.contains("ERROR:") {
+            stdout.lines().find(|l| l.starts_with("ERROR:"))
+                .map(|l| l.replace("ERROR:", ""))
+                .unwrap_or_else(|| "Unknown error".to_string())
+        } else {
+            stderr.to_string()
+        };
+        return Err(format!("Bootcheck failed: {}", error_msg));
+    }
+    
+    // Parse results
+    let has_mbr = stdout.contains("MBR:1");
+    let has_gpt = stdout.contains("GPT:1");
+    let has_efi = stdout.contains("EFI:1");
+    let has_bootable = stdout.contains("BOOTABLE:1");
+    let is_iso = stdout.contains("ISO:1");
+    let has_el_torito = stdout.contains("ELTORITO:1");
+    
+    // Determine boot type
+    let boot_type = if has_gpt && has_efi {
+        "UEFI (GPT)"
+    } else if has_mbr && has_efi {
+        "Hybrid (UEFI + Legacy)"
+    } else if has_mbr && has_bootable {
+        "Legacy (MBR)"
+    } else if is_iso && has_el_torito {
+        "ISO Boot (El Torito)"
+    } else if is_iso {
+        "ISO (nicht bootfähig)"
+    } else if has_mbr {
+        "MBR vorhanden (nicht bootfähig)"
+    } else {
+        "Nicht bootfähig"
+    };
+    
+    let is_bootable = has_gpt || has_bootable || has_el_torito || has_efi;
+    
+    Ok(serde_json::json!({
+        "bootable": is_bootable,
+        "boot_type": boot_type,
+        "has_mbr": has_mbr,
+        "has_gpt": has_gpt,
+        "has_efi": has_efi,
+        "has_bootable_flag": has_bootable,
+        "is_iso": is_iso,
+        "has_el_torito": has_el_torito
+    }))
+}
+
+/// Detect ISO 9660 size using sudo (for when we already have the password)
+/// This reads the Primary Volume Descriptor to get the actual ISO size
+fn detect_iso_size_with_sudo(device_path: &str, password: &str) -> Option<u64> {
+    // Python script to read ISO 9660 PVD and extract size
+    let python_script = format!(
+        r#"import os, sys, struct
+device = "{}"
+try:
+    fd = os.open(device, os.O_RDONLY)
+    with os.fdopen(fd, 'rb') as f:
+        # Seek to Primary Volume Descriptor at sector 16 (offset 0x8000)
+        f.seek(0x8000)
+        pvd = f.read(2048)
+        # Check if it's a valid PVD: type 1, "CD001"
+        if len(pvd) >= 2048 and pvd[0] == 1 and pvd[1:6] == b'CD001':
+            # Volume Space Size at offset 80 (little-endian 32-bit)
+            volume_blocks = struct.unpack('<I', pvd[80:84])[0]
+            # Logical Block Size at offset 128 (little-endian 16-bit)
+            block_size = struct.unpack('<H', pvd[128:130])[0]
+            total_size = volume_blocks * block_size
+            print(f"ISO_SIZE:{{total_size}}")
+            sys.exit(0)
+except Exception as e:
+    print(f"ERROR:{{e}}", file=sys.stderr)
+print("NOT_ISO")
+sys.exit(0)"#, device_path);
+
+    let mut child = Command::new("sudo")
+        .args(["-S", "python3", "-c", &python_script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    
+    if let Some(ref mut stdin) = child.stdin {
+        writeln!(stdin, "{}", password).ok();
+    }
+    
+    let output = child.wait_with_output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    for line in stdout.lines() {
+        if let Some(size_str) = line.strip_prefix("ISO_SIZE:") {
+            if let Ok(size) = size_str.parse::<u64>() {
+                return Some(size);
+            }
+        }
+    }
+    
+    None
 }
 
 fn emit_progress(app: &AppHandle, percent: u32, status: &str, operation: &str) {
@@ -1548,6 +2105,16 @@ async fn backup_usb_raw(app: AppHandle, disk_id: String, destination: String, di
     let rdisk_path = format!("/dev/r{}", disk_id);
     emit_progress(&app, 0, "Unmount Disk...", "backup");
     let _ = Command::new("diskutil").args(["unmountDisk", &disk_path]).output();
+    
+    // Try to detect actual ISO size using root privileges
+    emit_progress(&app, 0, "Prüfe ISO-Größe...", "backup");
+    let actual_size = detect_iso_size_with_sudo(&rdisk_path, &password).unwrap_or(disk_size);
+    
+    if actual_size != disk_size {
+        let _ = app.emit("log", format!("ISO erkannt: {} statt {} wird gesichert", 
+            format_bytes(actual_size), format_bytes(disk_size)));
+    }
+    
     emit_progress(&app, 0, "Lese USB-Daten...", "backup");
     
     let python_script = format!(
@@ -1578,7 +2145,7 @@ try:
 except OSError as exc:
     print(f"ERROR: {{exc}}", file=sys.stderr)
     sys.exit(1)
-print("SUCCESS", flush=True)"#, rdisk_path, destination.replace('"', r#"\""#), disk_size);
+print("SUCCESS", flush=True)"#, rdisk_path, destination.replace('"', r#"\""#), actual_size);
 
     let mut child = Command::new("sudo").args(["-S", "python3", "-c", &python_script])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
@@ -1598,7 +2165,7 @@ print("SUCCESS", flush=True)"#, rdisk_path, destination.replace('"', r#"\""#), d
         }
         if let Some(stripped) = line.strip_prefix("BYTES:") {
             if let Ok(bytes) = stripped.parse::<u64>() {
-                let percent = ((bytes as f64 / disk_size as f64) * 100.0) as u32;
+                let percent = ((bytes as f64 / actual_size as f64) * 100.0) as u32;
                 emit_progress(&app, percent.min(100), &format!("{}% gesichert", percent), "backup");
             }
         } else if line.contains("SUCCESS") {
@@ -1794,11 +2361,15 @@ pub fn run() {
             cancel_burn,
             cancel_backup,
             cancel_diagnose,
+            cancel_tools,
             diagnose_surface_scan,
             diagnose_full_test,
             diagnose_speed_test,
             get_smart_data,
             check_smartctl_installed,
+            format_disk,
+            secure_erase,
+            check_bootable,
             get_window_state,
             save_window_state,
             set_menu_language

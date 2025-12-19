@@ -67,6 +67,7 @@
       <button class="tab-btn active" data-tab="burn" data-i18n="tabs.burn">ISO → USB</button>
       <button class="tab-btn" data-tab="backup" data-i18n="tabs.backup">USB → ISO</button>
       <button class="tab-btn" data-tab="diagnose" data-i18n="tabs.diagnose">🔍 USB prüfen</button>
+      <button class="tab-btn" data-tab="tools" data-i18n="tabs.tools">🛠️ USB Tools</button>
     </div>
 
     <!-- ISO to USB Tab -->
@@ -76,6 +77,11 @@
         <div class="file-input-row">
           <input type="text" id="iso-path" data-i18n-placeholder="burn.noFile" placeholder="Keine Datei ausgewählt" readonly />
           <button id="select-iso-btn" class="btn secondary" data-i18n="burn.browse">Durchsuchen</button>
+        </div>
+        <div class="recent-files-row">
+          <select id="recent-iso-select" class="recent-select" disabled>
+            <option value="" data-i18n="burn.recentFiles">Zuletzt verwendet...</option>
+          </select>
         </div>
       </div>
 
@@ -171,9 +177,6 @@
               <small data-i18n="backup.filesystemDescription">Nur belegte Dateien - schneller und komprimiert</small>
             </span>
           </label>
-        </div>
-        <div id="filesystem-note" class="note hidden">
-          ✅ <span data-i18n="backup.filesystemSupported">Dateisystem unterstützt:</span> <span id="detected-fs"></span>
         </div>
       </div>
 
@@ -344,6 +347,116 @@
       <div class="section">
         <h3>📋 <span data-i18n="diagnose.log">Protokoll</span></h3>
         <div id="diagnose-log" class="log-output"></div>
+      </div>
+    </div>
+
+    <!-- USB Tools Tab -->
+    <div id="tools-tab" class="tab-content">
+      <div class="section">
+        <h3>💾 <span data-i18n="tools.selectUsb">USB-Stick auswählen</span></h3>
+        <div class="disk-row">
+          <select id="tools-disk-select">
+            <option value="" data-i18n="tools.selectUsbPlaceholder">-- USB-Stick wählen --</option>
+          </select>
+          <button id="refresh-tools-disks" class="btn secondary icon-btn" data-i18n-title="tools.refresh" title="Aktualisieren">🔄</button>
+        </div>
+        <div id="tools-disk-info" class="disk-info"></div>
+      </div>
+
+      <div class="section">
+        <h3>🔧 <span data-i18n="tools.formatTitle">Formatieren</span></h3>
+        <div class="format-options">
+          <div class="option-row">
+            <label data-i18n="tools.filesystem">Dateisystem:</label>
+            <select id="format-filesystem">
+              <option value="FAT32">FAT32</option>
+              <option value="ExFAT">ExFAT</option>
+              <option value="APFS">APFS</option>
+              <option value="HFS+">HFS+</option>
+            </select>
+          </div>
+          <div class="option-row">
+            <label data-i18n="tools.volumeName">Name:</label>
+            <input type="text" id="format-name" value="USB_STICK" maxlength="11" />
+          </div>
+          <div class="option-row">
+            <label data-i18n="tools.partitionScheme">Schema:</label>
+            <select id="format-scheme">
+              <option value="GPT">GPT (UEFI)</option>
+              <option value="MBR">MBR (Legacy)</option>
+            </select>
+          </div>
+        </div>
+        <button id="format-btn" class="btn primary" disabled>
+          💿 <span data-i18n="tools.formatButton">Formatieren</span>
+        </button>
+      </div>
+
+      <div class="section">
+        <h3>🗑️ <span data-i18n="tools.secureEraseTitle">Sicheres Löschen</span></h3>
+        <div class="erase-options">
+          <label class="radio-option">
+            <input type="radio" name="erase-level" value="0" checked />
+            <span class="radio-content">
+              <strong data-i18n="tools.eraseQuick">Schnell (1x Nullen)</strong>
+              <small>~5-10 Min</small>
+            </span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="erase-level" value="1" />
+            <span class="radio-content">
+              <strong data-i18n="tools.eraseRandom">Zufallsdaten</strong>
+              <small>~5-10 Min</small>
+            </span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="erase-level" value="4" />
+            <span class="radio-content">
+              <strong data-i18n="tools.eraseDoe">DoE 3-Pass</strong>
+              <small>~15-30 Min</small>
+            </span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="erase-level" value="3" />
+            <span class="radio-content">
+              <strong data-i18n="tools.eraseGutmann">Gutmann 35x</strong>
+              <small><span data-i18n="tools.eraseGutmannWarn">⚠️ Not for Flash!</span></small>
+            </span>
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="secure-erase-btn" class="btn danger" disabled>
+            🗑️ <span data-i18n="tools.secureEraseButton">Sicher löschen</span>
+          </button>
+          <button id="cancel-erase-btn" class="btn secondary hidden" disabled>
+            ❌ <span data-i18n="tools.cancelErase">Abbrechen</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>🚀 <span data-i18n="tools.bootCheckTitle">Boot-Analyse</span></h3>
+        <button id="bootcheck-btn" class="btn secondary" disabled>
+          🚀 <span data-i18n="tools.bootCheckButton">Boot-Analyse starten</span>
+        </button>
+        <div id="bootcheck-result" class="bootcheck-result hidden"></div>
+      </div>
+
+      <div class="section">
+        <h3>📊 <span data-i18n="tools.progress">Fortschritt</span></h3>
+        <div class="progress-container">
+          <div class="progress-bar" id="tools-progress">
+            <div class="progress-fill" id="tools-progress-fill"></div>
+          </div>
+          <span class="progress-text" id="tools-progress-text">0%</span>
+          <span class="eta-text" id="tools-eta"></span>
+        </div>
+        <div id="tools-phase" class="phase-text"></div>
+      </div>
+
+      <div class="section">
+        <h3>📋 <span data-i18n="tools.log">Protokoll</span></h3>
+        <div id="tools-log" class="log-output"></div>
       </div>
     </div>
   </div>

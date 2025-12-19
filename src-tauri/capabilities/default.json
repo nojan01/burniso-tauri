@@ -14,6 +14,7 @@
     "dialog:allow-confirm",
     "core:window:default",
     "core:window:allow-create",
+    "core:window:allow-set-progress-bar",
     "core:webview:default",
     "core:webview:allow-create-webview-window",
     "notification:default",

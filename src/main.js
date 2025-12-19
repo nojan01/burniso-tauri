@@ -66,6 +66,52 @@ document.addEventListener('DOMContentLoaded', async () => {
   let backupStartTime = null;
   let diagnoseStartTime = null;
 
+  // Recent Files Management
+  const MAX_RECENT_FILES = 10;
+  
+  function getRecentIsoFiles() {
+    try {
+      const stored = localStorage.getItem('recentIsoFiles');
+      return stored ? JSON.parse(stored) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+  
+  function addRecentIsoFile(path) {
+    if (!path) return;
+    let recent = getRecentIsoFiles();
+    // Remove if already exists
+    recent = recent.filter(f => f !== path);
+    // Add to front
+    recent.unshift(path);
+    // Limit to MAX_RECENT_FILES
+    recent = recent.slice(0, MAX_RECENT_FILES);
+    localStorage.setItem('recentIsoFiles', JSON.stringify(recent));
+    updateRecentFilesDropdown();
+  }
+  
+  function getRecentBackupDestinations() {
+    try {
+      const stored = localStorage.getItem('recentBackupDestinations');
+      return stored ? JSON.parse(stored) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+  
+  function addRecentBackupDestination(path) {
+    if (!path) return;
+    // Store only directory, not full file path
+    const dir = path.substring(0, path.lastIndexOf('/'));
+    if (!dir) return;
+    let recent = getRecentBackupDestinations();
+    recent = recent.filter(d => d !== dir);
+    recent.unshift(dir);
+    recent = recent.slice(0, MAX_RECENT_FILES);
+    localStorage.setItem('recentBackupDestinations', JSON.stringify(recent));
+  }
+
   // Confirm modal elements
   const confirmModal = document.getElementById('confirm-modal');
   const confirmTitle = document.getElementById('confirm-title');
@@ -177,6 +223,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Burn tab elements
   const isoPathInput = document.getElementById('iso-path');
   const selectIsoBtn = document.getElementById('select-iso-btn');
+  const recentIsoSelect = document.getElementById('recent-iso-select');
   const burnDiskSelect = document.getElementById('burn-disk-select');
   const refreshBurnDisks = document.getElementById('refresh-burn-disks');
   const burnDiskInfo = document.getElementById('burn-disk-info');
@@ -211,6 +258,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     return formatEta(remaining);
   }
 
+  // Translation helper shortcut
+  function t(key) {
+    return window.i18n.t(key) || key;
+  }
+
   // Backup tab elements
   const backupDiskSelect = document.getElementById('backup-disk-select');
   const refreshBackupDisks = document.getElementById('refresh-backup-disks');
@@ -219,8 +271,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const selectDestinationBtn = document.getElementById('select-destination-btn');
   const backupModeRaw = document.querySelector('input[name="backup-mode"][value="raw"]');
   const backupModeFilesystem = document.querySelector('input[name="backup-mode"][value="filesystem"]');
-  const filesystemNote = document.getElementById('filesystem-note');
-  const detectedFs = document.getElementById('detected-fs');
   const backupBtn = document.getElementById('backup-btn');
   const cancelBackupBtn = document.getElementById('cancel-backup-btn');
   const backupProgressFill = document.getElementById('backup-progress-fill');
@@ -269,6 +319,41 @@ document.addEventListener('DOMContentLoaded', async () => {
   const statsContent = document.getElementById('stats-content');
   const statsSummaryBadge = document.getElementById('stats-summary-badge');
 
+  // Tools tab elements
+  const toolsDiskSelect = document.getElementById('tools-disk-select');
+  const refreshToolsDisks = document.getElementById('refresh-tools-disks');
+  const toolsDiskInfo = document.getElementById('tools-disk-info');
+  const formatFilesystem = document.getElementById('format-filesystem');
+  const formatName = document.getElementById('format-name');
+  const formatScheme = document.getElementById('format-scheme');
+  const formatBtn = document.getElementById('format-btn');
+  const eraseLevelInputs = document.querySelectorAll('input[name="erase-level"]');
+  const secureEraseBtn = document.getElementById('secure-erase-btn');
+  const cancelEraseBtn = document.getElementById('cancel-erase-btn');
+  const bootcheckBtn = document.getElementById('bootcheck-btn');
+  const bootcheckResult = document.getElementById('bootcheck-result');
+  const toolsProgressFill = document.getElementById('tools-progress-fill');
+  const toolsProgressText = document.getElementById('tools-progress-text');
+  const toolsEta = document.getElementById('tools-eta');
+  const toolsPhase = document.getElementById('tools-phase');
+  const toolsLog = document.getElementById('tools-log');
+  
+  // Debug check for Tools elements
+  console.log('Tools Tab Elements loaded:', {
+    toolsDiskSelect: !!toolsDiskSelect,
+    refreshToolsDisks: !!refreshToolsDisks,
+    formatBtn: !!formatBtn,
+    secureEraseBtn: !!secureEraseBtn,
+    bootcheckBtn: !!bootcheckBtn,
+    bootcheckResult: !!bootcheckResult,
+    toolsLog: !!toolsLog
+  });
+  
+  // Tools tab state
+  let selectedToolsDisk = null;
+  let isToolsRunning = false;
+  let toolsStartTime = null;
+
   // Collapsible section toggle
   function setupCollapsible(header, content, section) {
     header.addEventListener('click', () => {
@@ -288,6 +373,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Track if smartctl check was already done
   let smartctlCheckDone = false;
+  let toolsTabLoaded = false;
 
   // Tab switching
   tabs.forEach(tab => {
@@ -313,6 +399,16 @@ document.addEventListener('DOMContentLoaded', async () => {
           // Ignore errors
         }
       }
+      
+      // Load disks when switching to tools tab (only first time with logging)
+      if (tab.dataset.tab === 'tools') {
+        if (!toolsTabLoaded) {
+          toolsTabLoaded = true;
+          loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
+        } else {
+          loadDisksSilent(toolsDiskSelect, toolsDiskInfo);
+        }
+      }
     });
   });
 
@@ -327,6 +423,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       isoPathInput.value = path;
       logBurn('ISO file selected: ' + path.split('/').pop(), 'info');
       updateBurnButton();
+      // Reset progress when selecting new file
+      setDockProgress(0, 'none');
+      burnProgressFill.style.width = '0%';
+      burnProgressText.textContent = '0%';
+      burnEta.textContent = '';
+      burnPhase.textContent = '';
+      burnPhase.className = 'phase-text';
       
       // Switch to burn tab if not already there
       const burnTab = document.querySelector('[data-tab="burn"]');
@@ -385,6 +488,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const timestamp = new Date().toLocaleTimeString();
     diagnoseLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
     diagnoseLog.scrollTop = diagnoseLog.scrollHeight;
+  }
+
+  function logTools(message, type) {
+    type = type || 'info';
+    const timestamp = new Date().toLocaleTimeString();
+    toolsLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
+    toolsLog.scrollTop = toolsLog.scrollHeight;
   }
 
   // Reset burn state to initial (silent = no disk reload log)
@@ -506,6 +616,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     infoElement.classList.remove('visible');
   }
 
+  // Update recent files dropdown
+  function updateRecentFilesDropdown() {
+    if (!recentIsoSelect) return;
+    const recent = getRecentIsoFiles();
+    const placeholderText = window.i18n?.t('burn.recentFiles') || 'Zuletzt verwendet...';
+    
+    if (recent.length === 0) {
+      recentIsoSelect.innerHTML = '<option value="">' + placeholderText + '</option>';
+      recentIsoSelect.disabled = true;
+      return;
+    }
+    
+    recentIsoSelect.disabled = false;
+    recentIsoSelect.innerHTML = '<option value="">' + placeholderText + '</option>';
+    recent.forEach(function(path) {
+      const option = document.createElement('option');
+      option.value = path;
+      // Show only filename for display
+      const filename = path.split('/').pop();
+      option.textContent = filename;
+      option.title = path; // Full path as tooltip
+      recentIsoSelect.appendChild(option);
+    });
+  }
+  
+  // Initialize recent files dropdown on load
+  updateRecentFilesDropdown();
+
   // Show disk info
   async function showDiskInfo(diskId, infoElement, logFn) {
     try {
@@ -523,25 +661,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       volumeInfo = await invoke('get_volume_info', { diskId: diskId });
       
       if (volumeInfo) {
-        filesystemNote.classList.remove('hidden');
-        
-        // Bei ISO-Dateisystemen: "Dateibasiert" deaktiviert lassen, aber Info anzeigen
+        // Bei ISO-Dateisystemen: "Dateibasiert" deaktiviert lassen
         if (volumeInfo.filesystem && volumeInfo.filesystem.startsWith('ISO:')) {
-          detectedFs.textContent = volumeInfo.filesystem.substring(4) + ' (ISO-Image erkannt - ' + formatBytes(volumeInfo.bytes || 0) + ')';
           backupModeFilesystem.disabled = true;
           backupModeRaw.checked = true;
         } else {
-          detectedFs.textContent = volumeInfo.filesystem;
           backupModeFilesystem.disabled = false;
         }
       } else {
-        filesystemNote.classList.add('hidden');
+        // Kein Dateisystem erkannt - Raw-Modus erzwingen
         backupModeFilesystem.disabled = true;
         backupModeRaw.checked = true;
       }
     } catch (err) {
       console.error('Volume info error:', err);
-      filesystemNote.classList.add('hidden');
       backupModeFilesystem.disabled = true;
       backupModeRaw.checked = true;
       volumeInfo = null;
@@ -574,11 +707,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         isoPathInput.value = selected;
         logBurn('ISO selected: ' + selected, 'success');
         updateBurnButton();
+        // Reset progress when selecting new file
+        setDockProgress(0, 'none');
+        burnProgressFill.style.width = '0%';
+        burnProgressText.textContent = '0%';
+        burnEta.textContent = '';
+        burnPhase.textContent = '';
+        burnPhase.className = 'phase-text';
+        // Reset recent dropdown selection
+        if (recentIsoSelect) recentIsoSelect.value = '';
       }
     } catch (err) {
       logBurn('Selection error: ' + err, 'error');
     }
   });
+
+  // Recent files dropdown change
+  if (recentIsoSelect) {
+    recentIsoSelect.addEventListener('change', function() {
+      if (recentIsoSelect.value) {
+        selectedIsoPath = recentIsoSelect.value;
+        isoPathInput.value = recentIsoSelect.value;
+        logBurn('ISO selected: ' + recentIsoSelect.value, 'success');
+        updateBurnButton();
+        // Reset progress
+        setDockProgress(0, 'none');
+        burnProgressFill.style.width = '0%';
+        burnProgressText.textContent = '0%';
+        burnEta.textContent = '';
+        burnPhase.textContent = '';
+        burnPhase.className = 'phase-text';
+      }
+    });
+  }
 
   refreshBurnDisks.addEventListener('click', function() {
     loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
@@ -587,6 +748,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   burnDiskSelect.addEventListener('change', async function() {
     if (burnDiskSelect.value) {
       selectedBurnDisk = JSON.parse(burnDiskSelect.value);
+      // Reset progress when selecting new disk
+      setDockProgress(0, 'none');
+      burnProgressFill.style.width = '0%';
+      burnProgressText.textContent = '0%';
+      burnEta.textContent = '';
+      burnPhase.textContent = '';
+      burnPhase.className = 'phase-text';
       await showDiskInfo(selectedBurnDisk.id, burnDiskInfo, logBurn);
       logBurn('USB selected: ' + selectedBurnDisk.name + ' (' + selectedBurnDisk.size + ')', 'info');
     } else {
@@ -657,6 +825,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       burnPhase.textContent = doVerify ? '✓ Written and verified!' : '✓ Successfully written!';
       burnPhase.className = 'phase-text success';
       
+      // Add to recent files on success
+      addRecentIsoFile(selectedIsoPath);
+      
       // Send notification
       sendNotification(
         window.i18n.t('notifications.burnComplete') || 'Brennvorgang abgeschlossen',
@@ -701,13 +872,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   backupDiskSelect.addEventListener('change', async function() {
     if (backupDiskSelect.value) {
       selectedBackupDisk = JSON.parse(backupDiskSelect.value);
+      // Reset progress when selecting new disk
+      setDockProgress(0, 'none');
+      backupProgressFill.style.width = '0%';
+      backupProgressText.textContent = '0%';
+      backupEta.textContent = '';
       await showDiskInfo(selectedBackupDisk.id, backupDiskInfo, logBackup);
       await checkVolumeInfo(selectedBackupDisk.id);
       logBackup('USB selected: ' + selectedBackupDisk.name + ' (' + selectedBackupDisk.size + ')', 'info');
     } else {
       selectedBackupDisk = null;
       backupDiskInfo.classList.remove('visible');
-      filesystemNote.classList.add('hidden');
       backupModeFilesystem.disabled = true;
       volumeInfo = null;
     }
@@ -799,6 +974,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Clear dock progress bar on success
       setDockProgress(100, 'none');
       
+      // Add to recent backup destinations on success
+      addRecentBackupDestination(selectedBackupDestination);
+      
       // Send notification
       sendNotification(
         window.i18n.t('notifications.backupComplete') || 'Backup abgeschlossen',
@@ -839,6 +1017,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   diagnoseDiskSelect.addEventListener('change', async function() {
     if (diagnoseDiskSelect.value) {
       selectedDiagnoseDisk = JSON.parse(diagnoseDiskSelect.value);
+      // Reset progress when selecting new disk
+      setDockProgress(0, 'none');
+      diagnoseProgressFill.style.width = '0%';
+      diagnoseProgressText.textContent = '0%';
+      diagnoseEta.textContent = '';
+      diagnosePhase.textContent = '';
+      diagnosePhase.className = 'phase-text';
+      statSectorsChecked.textContent = '0';
+      statErrorsFound.textContent = '0';
+      statReadSpeed.textContent = '-';
+      statWriteSpeed.textContent = '-';
+      statsSummaryBadge.classList.add('hidden');
       await showDiskInfo(selectedDiagnoseDisk.id, diagnoseDiskInfo, logDiagnose);
       logDiagnose('USB selected: ' + selectedDiagnoseDisk.name + ' (' + selectedDiagnoseDisk.size + ')', 'info');
       
@@ -1126,6 +1316,263 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // ========== Tools Tab Event Handlers ==========
+  
+  refreshToolsDisks.addEventListener('click', function() {
+    loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
+  });
+
+  toolsDiskSelect.addEventListener('change', async function() {
+    if (toolsDiskSelect.value) {
+      selectedToolsDisk = JSON.parse(toolsDiskSelect.value);
+      await showDiskInfo(selectedToolsDisk.id, toolsDiskInfo, logTools);
+      logTools('USB selected: ' + selectedToolsDisk.name + ' (' + selectedToolsDisk.size + ')', 'info');
+      formatBtn.disabled = false;
+      secureEraseBtn.disabled = false;
+      bootcheckBtn.disabled = false;
+    } else {
+      selectedToolsDisk = null;
+      toolsDiskInfo.classList.remove('visible');
+      formatBtn.disabled = true;
+      secureEraseBtn.disabled = true;
+      bootcheckBtn.disabled = true;
+    }
+  });
+
+  formatBtn.addEventListener('click', async function() {
+    if (!selectedToolsDisk) return;
+    
+    const filesystem = formatFilesystem.value;
+    const name = formatName.value || 'USB_STICK';
+    const scheme = formatScheme.value;
+    
+    // Confirmation dialog
+    const confirmed = await requestConfirm(
+      '⚠️ ' + t('tools.formatWarning'),
+      t('tools.formatConfirmMsg').replace('{name}', selectedToolsDisk.name).replace('{fs}', filesystem),
+      t('tools.formatConfirmYes'),
+      t('dialogs.cancel')
+    );
+    
+    if (!confirmed) {
+      logTools(t('tools.formatCancelled'), 'warning');
+      return;
+    }
+    
+    let password;
+    try {
+      password = await requestPassword(t('tools.formatAdminPrompt'));
+    } catch (e) {
+      logTools(t('tools.formatCancelled'), 'warning');
+      return;
+    }
+    
+    isToolsRunning = true;
+    toolsStartTime = Date.now();
+    formatBtn.disabled = true;
+    secureEraseBtn.disabled = true;
+    bootcheckBtn.disabled = true;
+    
+    // Reset progress display
+    toolsProgressFill.style.width = '0%';
+    toolsProgressText.textContent = '0%';
+    toolsEta.textContent = '';
+    toolsPhase.textContent = t('tools.formatFormatting');
+    toolsPhase.className = 'phase-text';
+    
+    logTools(t('tools.formatStarting').replace('{fs}', filesystem), 'info');
+    
+    try {
+      const result = await invoke('format_disk', {
+        diskId: selectedToolsDisk.id,
+        filesystem: filesystem,
+        name: name,
+        scheme: scheme,
+        password: password
+      });
+      logTools(result, 'success');
+      toolsProgressFill.style.width = '100%';
+      toolsProgressText.textContent = '100%';
+      toolsPhase.textContent = t('tools.formatComplete');
+      toolsPhase.className = 'phase-text success';
+      
+      sendNotification(t('notifications.formatComplete'), t('notifications.formatSuccess'));
+      loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
+    } catch (err) {
+      logTools(t('messages.error') + ': ' + err, 'error');
+      toolsPhase.textContent = t('tools.formatError');
+      toolsPhase.className = 'phase-text error';
+    }
+    
+    isToolsRunning = false;
+    formatBtn.disabled = !selectedToolsDisk;
+    secureEraseBtn.disabled = !selectedToolsDisk;
+    bootcheckBtn.disabled = !selectedToolsDisk;
+  });
+
+  secureEraseBtn.addEventListener('click', async function() {
+    if (!selectedToolsDisk) return;
+    
+    const eraseLevel = document.querySelector('input[name="erase-level"]:checked').value;
+    const levelNames = {
+      '0': t('tools.eraseQuick'),
+      '1': t('tools.eraseRandom'),
+      '3': t('tools.eraseGutmann'),
+      '4': t('tools.eraseDoe')
+    };
+    
+    // Confirmation dialog
+    const confirmed = await requestConfirm(
+      '⚠️ ' + t('tools.eraseWarning'),
+      t('tools.eraseConfirmMsg').replace('{name}', selectedToolsDisk.name).replace('{method}', levelNames[eraseLevel]),
+      t('tools.eraseConfirmYes'),
+      t('dialogs.cancel')
+    );
+    
+    if (!confirmed) {
+      logTools(t('tools.eraseCancelled'), 'warning');
+      return;
+    }
+    
+    let password;
+    try {
+      password = await requestPassword(t('tools.eraseAdminPrompt'));
+    } catch (e) {
+      logTools(t('tools.eraseCancelled'), 'warning');
+      return;
+    }
+    
+    isToolsRunning = true;
+    toolsStartTime = Date.now();
+    formatBtn.disabled = true;
+    secureEraseBtn.disabled = true;
+    bootcheckBtn.disabled = true;
+    cancelEraseBtn.classList.remove('hidden');
+    cancelEraseBtn.disabled = false;
+    
+    // Reset progress display
+    toolsProgressFill.style.width = '0%';
+    toolsProgressText.textContent = '0%';
+    toolsEta.textContent = '';
+    toolsPhase.textContent = t('tools.eraseErasing');
+    toolsPhase.className = 'phase-text';
+    
+    logTools(t('tools.eraseStarting').replace('{method}', levelNames[eraseLevel]), 'info');
+    logTools(t('tools.eraseTimeWarning'), 'warning');
+    
+    try {
+      const result = await invoke('secure_erase', {
+        diskId: selectedToolsDisk.id,
+        level: parseInt(eraseLevel),
+        password: password
+      });
+      logTools(result, 'success');
+      toolsProgressFill.style.width = '100%';
+      toolsProgressText.textContent = '100%';
+      toolsPhase.textContent = t('tools.eraseComplete');
+      toolsPhase.className = 'phase-text success';
+      
+      sendNotification(t('notifications.eraseComplete'), t('notifications.eraseSuccess'));
+      loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
+    } catch (err) {
+      const errMsg = String(err);
+      if (errMsg.includes('abgebrochen') || errMsg.includes('cancelled')) {
+        logTools(t('tools.eraseCancelled'), 'warning');
+        toolsPhase.textContent = t('tools.eraseAborted');
+        toolsPhase.className = 'phase-text warning';
+        toolsProgressFill.style.width = '0%';
+        toolsProgressText.textContent = '0%';
+      } else {
+        logTools(t('messages.error') + ': ' + err, 'error');
+        toolsPhase.textContent = t('tools.formatError');
+        toolsPhase.className = 'phase-text error';
+      }
+    }
+    
+    isToolsRunning = false;
+    formatBtn.disabled = !selectedToolsDisk;
+    secureEraseBtn.disabled = !selectedToolsDisk;
+    bootcheckBtn.disabled = !selectedToolsDisk;
+    cancelEraseBtn.classList.add('hidden');
+    cancelEraseBtn.disabled = true;
+  });
+
+  cancelEraseBtn.addEventListener('click', async function() {
+    logTools(t('messages.cancelled') + '...', 'warning');
+    cancelEraseBtn.disabled = true;
+    try {
+      await invoke('cancel_tools');
+    } catch (err) {
+      logTools(t('messages.error') + ': ' + err, 'error');
+    }
+  });
+
+  bootcheckBtn.addEventListener('click', async function() {
+    console.log('Bootcheck clicked, selectedToolsDisk:', selectedToolsDisk);
+    if (!selectedToolsDisk) {
+      console.log('No disk selected, returning');
+      return;
+    }
+    
+    // Request password (needs raw disk access)
+    let password;
+    try {
+      password = await requestPassword(t('tools.bootAdminPrompt'));
+    } catch (e) {
+      logTools(t('tools.bootCancelled'), 'warning');
+      return;
+    }
+    
+    console.log('Password received, starting bootcheck');
+    logTools(t('tools.bootStarting') + ' ' + selectedToolsDisk.name + '...', 'info');
+    bootcheckResult.classList.add('hidden');
+    
+    try {
+      const result = await invoke('check_bootable', { diskId: selectedToolsDisk.id, password: password });
+      console.log('Bootcheck result:', result);
+      
+      let html = '<div class="bootcheck-details">';
+      html += '<div class="bootcheck-status ' + (result.bootable ? 'bootable' : 'not-bootable') + '">';
+      html += result.bootable ? '✓ ' + t('tools.bootBootable') : '✗ ' + t('tools.bootNotBootable');
+      html += '</div>';
+      html += '<div class="bootcheck-type">' + result.boot_type + '</div>';
+      html += '<ul class="bootcheck-info">';
+      html += '<li>' + t('tools.bootMbrSig') + ': ' + (result.has_mbr ? '✓' : '✗') + '</li>';
+      html += '<li>' + t('tools.bootGpt') + ': ' + (result.has_gpt ? '✓' : '✗') + '</li>';
+      html += '<li>' + t('tools.bootEfiPart') + ': ' + (result.has_efi ? '✓' : '✗') + '</li>';
+      html += '<li>' + t('tools.bootFlag') + ': ' + (result.has_bootable_flag ? '✓' : '✗') + '</li>';
+      if (result.is_iso) {
+        html += '<li>' + t('tools.bootIso9660') + ': ✓</li>';
+        html += '<li>' + t('tools.bootElTorito') + ': ' + (result.has_el_torito ? '✓' : '✗') + '</li>';
+      }
+      html += '</ul></div>';
+      
+      bootcheckResult.innerHTML = html;
+      bootcheckResult.classList.remove('hidden');
+      
+      logTools(t('tools.bootAnalysis') + ': ' + result.boot_type, result.bootable ? 'success' : 'warning');
+    } catch (err) {
+      logTools(t('tools.bootError') + ': ' + err, 'error');
+      bootcheckResult.innerHTML = '<div class="bootcheck-error">' + t('messages.error') + ': ' + err + '</div>';
+      bootcheckResult.classList.remove('hidden');
+    }
+  });
+
+  // Listen for log events from backend
+  listen('log', function(event) {
+    const message = event.payload;
+    // Route to appropriate log based on current operation
+    if (isBurning) {
+      logBurn(message, 'info');
+    } else if (isBackingUp) {
+      logBackup(message, 'info');
+    } else if (isDiagnosing) {
+      logDiagnose(message, 'info');
+    } else if (isToolsRunning) {
+      logTools(message, 'info');
+    }
+  });
+
   // Listen for progress events
   listen('progress', function(event) {
     const percent = event.payload.percent;
@@ -1150,6 +1597,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (status.indexOf('✓') >= 0) {
         logBackup(status, 'success');
       }
+    } else if (operation === 'tools') {
+      toolsProgressFill.style.width = percent + '%';
+      toolsProgressText.textContent = percent + '%';
+      // Don't show ETA for tools operations (duration is unpredictable)
+      if (percent >= 100) {
+        toolsEta.textContent = '';
+      } else if (percent > 90) {
+        toolsEta.textContent = '⏳';
+      } else {
+        toolsEta.textContent = calculateEta(toolsStartTime, percent);
+      }
+      toolsPhase.textContent = status;
     }
   });
 

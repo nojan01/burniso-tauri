@@ -24,9 +24,9 @@
   - Wie bei Downloads im Finder
   - Nutzt Tauri Window setProgressBar API
 
-- [ ] **Letzte Dateien merken**
+- [x] **Letzte Dateien merken**
   - Zuletzt verwendete ISO-Dateien speichern
-  - Schnellzugriff im Menü "Ablage → Zuletzt verwendet"
+  - Schnellzugriff im Dropdown "Zuletzt verwendet"
   - Zuletzt verwendete Speicherorte für Backups
 
 ---
@@ -35,10 +35,26 @@
 
 ### 🚀 Funktionale Erweiterungen
 
-- [ ] **Bootfähigkeit prüfen**
-  - Nach dem Brennen automatisch prüfen
-  - EFI/MBR-Partitionstabelle analysieren
-  - Warnung wenn nicht bootfähig
+- [x] **USB Tools Tab**
+  - Neuer "🛠️ USB Tools" Tab
+  - Sammelt alle USB-Werkzeuge an einem Ort
+
+- [x] **Bootfähigkeit prüfen**
+  - Boot-Status-Analyse (EFI/MBR/Hybrid/El Torito)
+  - Zeigt erkannte Boot-Typen und Signaturen
+  - Info ob USB-Stick bootfähig ist
+
+- [x] **USB-Stick Formatieren**
+  - Wählbare Dateisysteme: FAT32, ExFAT, APFS, HFS+
+  - Partitionsschema: GPT oder MBR
+  - Volume-Name anpassbar
+
+- [x] **Sicheres Löschen**
+  - 4 Sicherheitsstufen (0-4)
+  - Schnell (1x Nullen) für SSD/Flash
+  - Standard (1x Zufall)
+  - DoE 3-Pass
+  - Gutmann 35-Pass (nur HDD)
 
 - [ ] **ISO-Vorschau**
   - Vor dem Brennen anzeigen:
@@ -46,12 +62,6 @@
     - Boot-Typ (UEFI/Legacy/Hybrid)
     - OS-Erkennung (Ubuntu, Windows, Fedora, etc.)
     - Enthaltene Dateien (optional)
-
-- [ ] **USB-Stick Formatieren**
-  - Neuer Tab oder Button im Diagnose-Tab
-  - Wählbare Dateisysteme: FAT32, ExFAT, APFS, HFS+
-  - Optionen: Schnellformat, Sicher löschen
-  - Partitionsschema: GPT oder MBR
 
 - [ ] **Fehlerhafte Sektoren behandeln**
   - Im Diagnose-Tab nach Full Test
@@ -108,13 +118,15 @@
 
 | Priorität | Feature | Aufwand | Version |
 |-----------|---------|---------|---------|
-| 🔴 Hoch | Drag & Drop | 🟢 Gering | 1.2.0 |
-| 🔴 Hoch | Geschätzte Restzeit | 🟢 Gering | 1.2.0 |
-| 🟡 Mittel | Benachrichtigungen | 🟢 Gering | 1.2.0 |
-| 🟡 Mittel | Dock-Fortschritt | 🟡 Mittel | 1.2.0 |
-| 🟡 Mittel | Letzte Dateien | 🟢 Gering | 1.2.0 |
-| 🟡 Mittel | USB Formatieren | 🟡 Mittel | 1.3.0 |
-| 🟡 Mittel | Bootfähigkeit prüfen | 🟡 Mittel | 1.3.0 |
+| 🔴 Hoch | Drag & Drop | 🟢 Gering | 1.2.0 ✅ |
+| 🔴 Hoch | Geschätzte Restzeit | 🟢 Gering | 1.2.0 ✅ |
+| 🟡 Mittel | Benachrichtigungen | 🟢 Gering | 1.2.0 ✅ |
+| 🟡 Mittel | Dock-Fortschritt | 🟡 Mittel | 1.2.0 ✅ |
+| 🟡 Mittel | Letzte Dateien | 🟢 Gering | 1.2.0 ✅ |
+| 🟡 Mittel | USB Tools Tab | 🟡 Mittel | 1.3.0 ✅ |
+| 🟡 Mittel | USB Formatieren | 🟡 Mittel | 1.3.0 ✅ |
+| 🟡 Mittel | Sicheres Löschen | 🟡 Mittel | 1.3.0 ✅ |
+| 🟡 Mittel | Bootfähigkeit prüfen | 🟡 Mittel | 1.3.0 ✅ |
 | 🟢 Niedrig | ISO-Vorschau | 🟡 Mittel | 1.3.0 |
 | 🟢 Niedrig | Intel Mac Build | 🟢 Gering | 1.4.0 |
 | 🟢 Niedrig | Multiboot | 🔴 Hoch | 1.4.0 |
