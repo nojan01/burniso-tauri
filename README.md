@@ -42,6 +42,19 @@
 
 > 💡 Für erweiterte S.M.A.R.T.-Daten: `brew install smartmontools`
 
+### 🛠️ USB Tools
+- **Formatieren** - FAT32, ExFAT, APFS, HFS+ mit GPT oder MBR
+- **First Aid** - Repariert Dateisystem-Fehler auf USB-Sticks
+- **Sicher Löschen** - 5 Sicherheitsstufen (Schnell bis Gutmann 35×)
+- **Boot-Analyse** - Prüft Bootfähigkeit (MBR, GPT, EFI, El Torito)
+
+### 🔍 Forensik-Analyse (NEU in 1.3.0)
+- **Geräteinformationen** - Hersteller, Modell, Seriennummer
+- **Partitionen** - Layout, Dateisysteme, Größen
+- **Boot-Strukturen** - MBR, GPT, EFI-Partition
+- **Hash-Werte** - MD5, SHA-256 der ersten Sektoren
+- **Export** - JSON (Zwischenablage) oder HTML-Report
+
 ### 🌍 Mehrsprachig
 - **Deutsch** und **English** - Umschaltbar über das Hilfe-Menü
 - Automatische Erkennung der Systemsprache beim ersten Start
@@ -159,6 +172,8 @@ cargo tauri build
 | Tab: ISO → USB | `⌘1` |
 | Tab: USB → ISO | `⌘2` |
 | Tab: USB prüfen | `⌘3` |
+| Tab: USB Tools | `⌘4` |
+| Tab: Forensik | `⌘5` |
 | ISO auf USB brennen | `⌘B` |
 | USB sichern | `⌘⇧B` |
 | USB-Diagnose starten | `⌘D` |
