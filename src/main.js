@@ -327,6 +327,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const formatName = document.getElementById('format-name');
   const formatScheme = document.getElementById('format-scheme');
   const formatBtn = document.getElementById('format-btn');
+  const repairBtn = document.getElementById('repair-btn');
   const eraseLevelInputs = document.querySelectorAll('input[name="erase-level"]');
   const secureEraseBtn = document.getElementById('secure-erase-btn');
   const cancelEraseBtn = document.getElementById('cancel-erase-btn');
@@ -338,6 +339,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const toolsPhase = document.getElementById('tools-phase');
   const toolsLog = document.getElementById('tools-log');
   
+  // Forensic tab elements
+  const forensicDiskSelect = document.getElementById('forensic-disk-select');
+  const refreshForensicDisks = document.getElementById('refresh-forensic-disks');
+  const forensicBtn = document.getElementById('forensic-btn');
+  const forensicResult = document.getElementById('forensic-result');
+  const forensicExportSection = document.getElementById('forensic-export-section');
+  const copyForensicBtn = document.getElementById('copy-forensic-btn');
+  const exportHtmlBtn = document.getElementById('export-html-btn');
+  const forensicLog = document.getElementById('forensic-log');
+  
   // Debug check for Tools elements
   console.log('Tools Tab Elements loaded:', {
     toolsDiskSelect: !!toolsDiskSelect,
@@ -348,6 +359,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     bootcheckResult: !!bootcheckResult,
     toolsLog: !!toolsLog
   });
+  
+  // Forensic tab state
+  let selectedForensicDisk = null;
+  let lastForensicResult = null;
+  let forensicTabLoaded = false;
   
   // Tools tab state
   let selectedToolsDisk = null;
@@ -389,11 +405,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
           const installed = await invoke('check_smartctl_installed');
           if (!installed) {
-            logDiagnose('💡 Tip: For extended S.M.A.R.T. data on USB hard drives:', 'info');
-            logDiagnose('   brew install smartmontools', 'warning');
-            logDiagnose('   (USB sticks and SD cards do not support SMART)', 'info');
+            logDiagnose(t('diagnose.smartTip'), 'info');
+            logDiagnose(t('diagnose.smartInstall'), 'warning');
+            logDiagnose(t('diagnose.smartNote'), 'info');
           } else {
-            logDiagnose('✅ smartmontools detected - full SMART support available', 'success');
+            logDiagnose(t('diagnose.smartDetected'), 'success');
           }
         } catch (err) {
           // Ignore errors
@@ -407,6 +423,16 @@ document.addEventListener('DOMContentLoaded', async () => {
           loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
         } else {
           loadDisksSilent(toolsDiskSelect, toolsDiskInfo);
+        }
+      }
+      
+      // Load disks when switching to forensic tab
+      if (tab.dataset.tab === 'forensic') {
+        if (!forensicTabLoaded) {
+          forensicTabLoaded = true;
+          loadDisks(forensicDiskSelect, null, logForensic);
+        } else {
+          loadDisksSilent(forensicDiskSelect, null);
         }
       }
     });
@@ -495,6 +521,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const timestamp = new Date().toLocaleTimeString();
     toolsLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
     toolsLog.scrollTop = toolsLog.scrollHeight;
+  }
+
+  function logForensic(message, type) {
+    type = type || 'info';
+    const timestamp = new Date().toLocaleTimeString();
+    forensicLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
+    forensicLog.scrollTop = forensicLog.scrollHeight;
   }
 
   // Reset burn state to initial (silent = no disk reload log)
@@ -1030,7 +1063,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       statWriteSpeed.textContent = '-';
       statsSummaryBadge.classList.add('hidden');
       await showDiskInfo(selectedDiagnoseDisk.id, diagnoseDiskInfo, logDiagnose);
-      logDiagnose('USB selected: ' + selectedDiagnoseDisk.name + ' (' + selectedDiagnoseDisk.size + ')', 'info');
+      logDiagnose(t('diagnose.usbSelected').replace('{name}', selectedDiagnoseDisk.name).replace('{size}', selectedDiagnoseDisk.size), 'info');
       
       // Load SMART data
       await loadSmartData(selectedDiagnoseDisk.id);
@@ -1069,7 +1102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         smartStatusBadge.textContent = 'N/A';
         smartStatusBadge.className = 'status-badge unavailable';
         smartStatusBadge.classList.remove('hidden');
-        logDiagnose('SMART: ' + (data.error_message || 'Not available'), 'info');
+        logDiagnose(t('diagnose.smartNotAvailable').replace('{msg}', data.error_message || t('diagnose.smartUnavailable')), 'info');
         return;
       }
       
@@ -1139,13 +1172,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         smartWarning.classList.remove('hidden');
       }
       
-      logDiagnose('SMART Status: ' + data.health_status + ' (via ' + data.source + ')', 'success');
+      logDiagnose(t('diagnose.smartStatusLog').replace('{status}', data.health_status).replace('{source}', data.source), 'success');
       
     } catch (err) {
       smartLoading.classList.add('hidden');
       smartUnavailable.classList.remove('hidden');
-      smartUnavailableMsg.textContent = 'Fehler beim Laden der SMART-Daten: ' + err;
-      logDiagnose('SMART error: ' + err, 'error');
+      smartUnavailableMsg.textContent = t('diagnose.smartError').replace('{error}', err);
+      logDiagnose(t('diagnose.smartError').replace('{error}', err), 'error');
     }
   }
 
@@ -1170,14 +1203,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Confirmation for destructive tests
     if (isDestructive) {
       const confirmed = await requestConfirm(
-        '⚠️ WARNING!',
-        'All data on "' + selectedDiagnoseDisk.name + '" (' + selectedDiagnoseDisk.id + ') will be PERMANENTLY deleted!\n\nContinue?',
-        'Yes, delete',
-        'Cancel'
+        t('diagnose.warningTitle'),
+        t('diagnose.confirmDeleteMsg').replace('{name}', selectedDiagnoseDisk.name).replace('{id}', selectedDiagnoseDisk.id),
+        t('diagnose.confirmDeleteYes'),
+        t('dialogs.cancel')
       );
       
       if (!confirmed) {
-        logDiagnose('Test cancelled', 'warning');
+        logDiagnose(t('diagnose.testCancelled'), 'warning');
         return;
       }
     }
@@ -1185,9 +1218,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Request password for raw device access
     let password;
     try {
-      password = await requestPassword('Zum Zugriff auf den USB-Stick werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
+      password = await requestPassword(t('dialogs.adminPasswordPrompt') + '\n\n' + t('dialogs.enterPassword') + ':');
     } catch (err) {
-      logDiagnose('Password prompt cancelled', 'warning');
+      logDiagnose(t('diagnose.passwordCancelled'), 'warning');
       return;
     }
     
@@ -1206,14 +1239,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     statWriteSpeed.textContent = '-';
     statsSummaryBadge.classList.add('hidden');
     
-    const modeNames = { surface: 'Surface Scan', full: 'Full Test', speed: 'Speed Test' };
-    logDiagnose('Starting ' + modeNames[mode] + '...', 'info');
-    diagnosePhase.textContent = 'Initializing...';
+    const modeNames = { surface: 'Surface Scan', full: t('diagnose.fullTest'), speed: t('diagnose.speedTest') };
+    logDiagnose(t('diagnose.startingTest').replace('{mode}', modeNames[mode]), 'info');
+    diagnosePhase.textContent = t('messages.loading');
     diagnosePhase.className = 'phase-text';
     
     try {
       let result;
-      logDiagnose('Calling test function: ' + mode, 'info');
+      logDiagnose(t('diagnose.callingTest').replace('{mode}', mode), 'info');
       
       if (mode === 'surface') {
         result = await invoke('diagnose_surface_scan', {
@@ -1221,12 +1254,12 @@ document.addEventListener('DOMContentLoaded', async () => {
           password: password
         });
       } else if (mode === 'full') {
-        logDiagnose('Invoking diagnose_full_test...', 'info');
+        logDiagnose(t('diagnose.invokingFullTest'), 'info');
         result = await invoke('diagnose_full_test', {
           diskId: selectedDiagnoseDisk.id,
           password: password
         });
-        logDiagnose('diagnose_full_test returned', 'info');
+        logDiagnose(t('diagnose.fullTestReturned'), 'info');
       } else if (mode === 'speed') {
         result = await invoke('diagnose_speed_test', {
           diskId: selectedDiagnoseDisk.id,
@@ -1237,7 +1270,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Display results
       if (result.success) {
         logDiagnose('✓ ' + result.message, 'success');
-        diagnosePhase.textContent = '✓ Test completed!';
+        diagnosePhase.textContent = '✓ ' + t('diagnose.testComplete');
         diagnosePhase.className = 'phase-text success';
         diagnoseEta.textContent = '';
         statsSummaryBadge.textContent = '✓ OK';
@@ -1251,7 +1284,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         );
       } else {
         logDiagnose('✗ ' + result.message, 'error');
-        diagnosePhase.textContent = '✗ Test failed!';
+        diagnosePhase.textContent = '✗ ' + t('diagnose.errorsDetected');
         diagnosePhase.className = 'phase-text error';
         diagnoseEta.textContent = '';
         
@@ -1260,7 +1293,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           window.i18n.t('notifications.diagnoseComplete') || 'Test abgeschlossen',
           window.i18n.t('notifications.diagnoseFailed') || 'USB-Test: Fehler gefunden!'
         );
-        statsSummaryBadge.textContent = '✗ Errors';
+        statsSummaryBadge.textContent = '✗ ' + t('diagnose.errorsDetected');
         statsSummaryBadge.className = 'status-badge failed';
         statsSummaryBadge.classList.remove('hidden');
       }
@@ -1277,8 +1310,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       // Log bad sectors if any
       if (result.bad_sectors && result.bad_sectors.length > 0) {
-        logDiagnose('Bad sectors found: ' + result.bad_sectors.slice(0, 20).join(', ') + 
-                    (result.bad_sectors.length > 20 ? '... and ' + (result.bad_sectors.length - 20) + ' more' : ''), 'warning');
+        logDiagnose(t('diagnose.badSectorsFound').replace('{sectors}', result.bad_sectors.slice(0, 20).join(', ')) + 
+                    (result.bad_sectors.length > 20 ? t('diagnose.andMore').replace('{count}', result.bad_sectors.length - 20) : ''), 'warning');
       }
       
       diagnoseProgressFill.style.width = '100%';
@@ -1293,12 +1326,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);
     } catch (err) {
       if (diagnoseCancelled) {
-        logDiagnose('✗ Test cancelled', 'warning');
-        diagnosePhase.textContent = 'Cancelled';
+        logDiagnose('✗ ' + t('diagnose.testCancelled'), 'warning');
+        diagnosePhase.textContent = t('messages.cancelled');
         diagnosePhase.className = 'phase-text error';
       } else {
-        logDiagnose('Error: ' + err, 'error');
-        diagnosePhase.textContent = 'Error!';
+        logDiagnose(t('diagnose.error').replace('{error}', err), 'error');
+        diagnosePhase.textContent = t('messages.error') + '!';
         diagnosePhase.className = 'phase-text error';
       }
       resetDiagnoseState(true);
@@ -1310,9 +1343,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     cancelDiagnoseBtn.disabled = true;
     try {
       await invoke('cancel_diagnose');
-      logDiagnose('Cancelling...', 'warning');
+      logDiagnose(t('diagnose.cancelling'), 'warning');
     } catch (err) {
-      logDiagnose('Cancel error: ' + err, 'error');
+      logDiagnose(t('diagnose.cancelError').replace('{error}', err), 'error');
     }
   });
 
@@ -1328,12 +1361,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       await showDiskInfo(selectedToolsDisk.id, toolsDiskInfo, logTools);
       logTools('USB selected: ' + selectedToolsDisk.name + ' (' + selectedToolsDisk.size + ')', 'info');
       formatBtn.disabled = false;
+      repairBtn.disabled = false;
       secureEraseBtn.disabled = false;
       bootcheckBtn.disabled = false;
     } else {
       selectedToolsDisk = null;
       toolsDiskInfo.classList.remove('visible');
       formatBtn.disabled = true;
+      repairBtn.disabled = true;
       secureEraseBtn.disabled = true;
       bootcheckBtn.disabled = true;
     }
@@ -1370,6 +1405,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     isToolsRunning = true;
     toolsStartTime = Date.now();
     formatBtn.disabled = true;
+    repairBtn.disabled = true;
     secureEraseBtn.disabled = true;
     bootcheckBtn.disabled = true;
     
@@ -1406,6 +1442,65 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     isToolsRunning = false;
     formatBtn.disabled = !selectedToolsDisk;
+    repairBtn.disabled = !selectedToolsDisk;
+    secureEraseBtn.disabled = !selectedToolsDisk;
+    bootcheckBtn.disabled = !selectedToolsDisk;
+  });
+
+  // Repair disk button
+  repairBtn.addEventListener('click', async function() {
+    if (!selectedToolsDisk) return;
+    
+    let password;
+    try {
+      password = await requestPassword(t('tools.repairAdminPrompt'));
+    } catch (e) {
+      logTools(t('tools.repairCancelled'), 'warning');
+      return;
+    }
+    
+    if (!password) {
+      logTools(t('tools.repairCancelled'), 'warning');
+      return;
+    }
+    
+    isToolsRunning = true;
+    formatBtn.disabled = true;
+    repairBtn.disabled = true;
+    secureEraseBtn.disabled = true;
+    bootcheckBtn.disabled = true;
+    
+    logTools(t('tools.repairStarting'), 'info');
+    toolsPhase.textContent = t('tools.repairRepairing');
+    toolsPhase.className = 'phase-text';
+    
+    try {
+      const result = await invoke('repair_disk', { 
+        diskId: selectedToolsDisk.id,
+        password: password
+      });
+      logTools(result, 'success');
+      toolsProgressFill.style.width = '100%';
+      toolsProgressText.textContent = '100%';
+      
+      // Check if result indicates success
+      if (result.includes('OK') || result.includes('successfully') || result.includes('erfolgreich')) {
+        toolsPhase.textContent = t('tools.repairNoErrors');
+      } else {
+        toolsPhase.textContent = t('tools.repairComplete');
+      }
+      toolsPhase.className = 'phase-text success';
+      
+      loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
+    } catch (err) {
+      logTools(t('tools.repairError') + ': ' + err, 'error');
+      toolsPhase.textContent = t('tools.repairError');
+      toolsPhase.className = 'phase-text error';
+    }
+    
+    isToolsRunning = false;
+    formatBtn.disabled = !selectedToolsDisk;
+    repairBtn.disabled = !selectedToolsDisk;
     secureEraseBtn.disabled = !selectedToolsDisk;
     bootcheckBtn.disabled = !selectedToolsDisk;
   });
@@ -1445,6 +1540,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     isToolsRunning = true;
     toolsStartTime = Date.now();
     formatBtn.disabled = true;
+    repairBtn.disabled = true;
     secureEraseBtn.disabled = true;
     bootcheckBtn.disabled = true;
     cancelEraseBtn.classList.remove('hidden');
@@ -1491,6 +1587,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     isToolsRunning = false;
     formatBtn.disabled = !selectedToolsDisk;
+    repairBtn.disabled = !selectedToolsDisk;
     secureEraseBtn.disabled = !selectedToolsDisk;
     bootcheckBtn.disabled = !selectedToolsDisk;
     cancelEraseBtn.classList.add('hidden');
@@ -1558,6 +1655,535 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // ===== FORENSIC TAB HANDLERS =====
+  
+  // Forensic disk select change handler
+  forensicDiskSelect.addEventListener('change', async function() {
+    if (forensicDiskSelect.value) {
+      selectedForensicDisk = JSON.parse(forensicDiskSelect.value);
+      logForensic('USB ausgewählt: ' + selectedForensicDisk.name + ' (' + selectedForensicDisk.size + ')', 'info');
+      forensicBtn.disabled = false;
+    } else {
+      selectedForensicDisk = null;
+      forensicBtn.disabled = true;
+    }
+  });
+  
+  // Refresh forensic disks button
+  refreshForensicDisks.addEventListener('click', function() {
+    loadDisks(forensicDiskSelect, null, logForensic);
+  });
+
+  // Forensic Analysis button handler
+  forensicBtn.addEventListener('click', async function() {
+    if (!selectedForensicDisk) return;
+    
+    // Request password (needs raw disk access)
+    let password;
+    try {
+      password = await requestPassword(t('tools.forensicAdminPrompt') || 'Administrator-Rechte für forensische Analyse erforderlich');
+    } catch (e) {
+      logForensic(t('tools.forensicCancelled') || 'Forensik-Analyse abgebrochen', 'warning');
+      return;
+    }
+    
+    logForensic(t('tools.forensicStarting') || 'Starte Forensik-Analyse...', 'info');
+    forensicResult.classList.add('hidden');
+    forensicExportSection.classList.add('hidden');
+    forensicBtn.disabled = true;
+    
+    try {
+      const result = await invoke('forensic_analysis', { 
+        diskId: selectedForensicDisk.id, 
+        password: password 
+      });
+      
+      // Store for export
+      lastForensicResult = result;
+      
+      // Build the forensic report HTML
+      let html = '<div class="forensic-report">';
+      
+      // Header with timestamp
+      html += '<div class="forensic-header">';
+      html += '<h4>🔬 ' + (t('tools.forensicTitle') || 'Forensik-Analyse') + '</h4>';
+      html += '<div class="forensic-timestamp">' + (t('tools.forensicTimestamp') || 'Zeitstempel') + ': ' + result.timestamp + '</div>';
+      html += '</div>';
+      
+      // Device Info Section
+      html += '<div class="forensic-section">';
+      html += '<h5>📱 ' + (t('tools.forensicDeviceInfo') || 'Geräteinformationen') + '</h5>';
+      html += '<div class="forensic-grid">';
+      for (let key in result.disk_info) {
+        if (result.disk_info[key]) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + result.disk_info[key] + '</span></div>';
+        }
+      }
+      html += '</div></div>';
+      
+      // USB Info Section
+      if (result.usb_info && Object.keys(result.usb_info).length > 0) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🔌 ' + (t('tools.forensicUsbInfo') || 'USB-Controller-Daten') + '</h5>';
+        html += '<div class="forensic-grid">';
+        for (let key in result.usb_info) {
+          if (result.usb_info[key]) {
+            html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + result.usb_info[key] + '</span></div>';
+          }
+        }
+        html += '</div></div>';
+      }
+      
+      // Partition Layout Section
+      if (result.partition_layout) {
+        html += '<div class="forensic-section">';
+        html += '<h5>💾 ' + (t('tools.forensicPartitions') || 'Partitionslayout') + '</h5>';
+        html += '<div class="forensic-partitions">';
+        if (Array.isArray(result.partition_layout)) {
+          result.partition_layout.forEach((p, i) => {
+            html += '<div class="forensic-partition">';
+            html += '<strong>' + p.identifier + '</strong> (' + (p.size || 'N/A') + ')';
+            if (p.name) html += ' - ' + p.name;
+            if (p.type) html += ' [' + p.type + ']';
+            html += '</div>';
+          });
+        } else if (typeof result.partition_layout === 'string' && result.partition_layout.trim()) {
+          // diskutil list output as string - display as preformatted text
+          html += '<pre class="forensic-partition-raw">' + result.partition_layout + '</pre>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Boot Info Section
+      if (result.boot_info) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🚀 ' + (t('tools.forensicBootInfo') || 'Boot-Strukturen') + '</h5>';
+        html += '<div class="forensic-grid">';
+        // Use correct key names from Rust backend
+        const hasMbr = result.boot_info.has_mbr_signature || result.boot_info.has_mbr;
+        const hasGpt = result.boot_info.has_gpt;
+        const hasEfi = result.mbr_analysis?.partition_entries?.some(p => p.type_hex === 'EF') || result.boot_info.has_efi;
+        const isBootable = hasMbr || hasGpt || result.boot_info.is_iso9660;
+        
+        html += '<div class="forensic-item"><span class="forensic-label">MBR-Signatur:</span> <span class="forensic-value">' + (hasMbr ? '✓ (55AA)' : '✗') + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">GPT:</span> <span class="forensic-value">' + (hasGpt ? '✓ (EFI PART)' : '✗') + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">EFI-Partition:</span> <span class="forensic-value">' + (hasEfi ? '✓' : '✗') + '</span></div>';
+        
+        // Determine boot type
+        let bootType = '';
+        if (result.boot_info.is_iso9660) {
+          bootType = 'ISO 9660';
+          if (result.boot_info.has_el_torito_boot) bootType += ' + El Torito';
+        } else if (hasGpt && hasEfi) {
+          bootType = 'UEFI (GPT)';
+        } else if (hasMbr && hasEfi) {
+          bootType = 'UEFI (MBR)';
+        } else if (hasMbr) {
+          bootType = 'Legacy BIOS (MBR)';
+        }
+        
+        html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicBootable') || 'Bootfähig') + ':</span> <span class="forensic-value">' + (isBootable ? '✓ ' + bootType : '✗') + '</span></div>';
+        
+        if (result.boot_info.is_iso9660) {
+          html += '<div class="forensic-item"><span class="forensic-label">ISO 9660:</span> <span class="forensic-value">✓</span></div>';
+          if (result.boot_info.iso_volume_label) {
+            html += '<div class="forensic-item"><span class="forensic-label">Volume Label:</span> <span class="forensic-value">' + result.boot_info.iso_volume_label + '</span></div>';
+          }
+          html += '<div class="forensic-item"><span class="forensic-label">El Torito:</span> <span class="forensic-value">' + (result.boot_info.has_el_torito_boot ? '✓' : '✗') + '</span></div>';
+        }
+        
+        if (result.boot_info.mbr_partitions && result.boot_info.mbr_partitions !== 'none') {
+          html += '<div class="forensic-item full-width"><span class="forensic-label">MBR-Partitionen:</span> <span class="forensic-value">' + result.boot_info.mbr_partitions + '</span></div>';
+        }
+        
+        if (result.boot_info.gpt_disk_guid) {
+          html += '<div class="forensic-item full-width"><span class="forensic-label">GPT Disk GUID:</span> <span class="forensic-value mono">' + result.boot_info.gpt_disk_guid + '</span></div>';
+        }
+        
+        html += '</div></div>';
+      }
+      
+      // Filesystem Signatures Section
+      if (result.filesystem_signatures && result.filesystem_signatures.length > 0) {
+        html += '<div class="forensic-section">';
+        html += '<h5>📂 ' + (t('tools.forensicFilesystems') || 'Erkannte Dateisysteme') + '</h5>';
+        html += '<div class="forensic-filesystems">';
+        result.filesystem_signatures.forEach(fs => {
+          html += '<div class="forensic-fs-item">';
+          html += '<span class="fs-name">' + fs.filesystem + '</span>';
+          html += ' @ Offset ' + fs.offset;
+          if (fs.label) html += ' - Label: "' + fs.label + '"';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      }
+      
+      // Content Analysis Section
+      if (result.content_analysis) {
+        html += '<div class="forensic-section">';
+        html += '<h5>📁 ' + (t('tools.forensicContent') || 'Inhaltsanalyse') + '</h5>';
+        html += '<div class="forensic-grid">';
+        if (result.content_analysis.mount_point) {
+          html += '<div class="forensic-item"><span class="forensic-label">Mount:</span> <span class="forensic-value">' + result.content_analysis.mount_point + '</span></div>';
+        }
+        if (result.content_analysis.total_items !== undefined) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicTotalItems') || 'Elemente') + ':</span> <span class="forensic-value">' + result.content_analysis.total_items + '</span></div>';
+        }
+        if (result.content_analysis.detected_os && result.content_analysis.detected_os.length > 0) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicDetectedOS') || 'Erkannte OS') + ':</span> <span class="forensic-value">' + result.content_analysis.detected_os.join(', ') + '</span></div>';
+        }
+        if (result.content_analysis.top_level && result.content_analysis.top_level.length > 0) {
+          html += '<div class="forensic-item full-width"><span class="forensic-label">' + (t('tools.forensicTopLevel') || 'Hauptverzeichnis') + ':</span></div>';
+          html += '<div class="forensic-toplevel">' + result.content_analysis.top_level.map(f => '<span class="toplevel-item">' + f + '</span>').join('') + '</div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Special Structures Section
+      if (result.special_structures) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🔎 ' + (t('tools.forensicSpecial') || 'Spezialstrukturen') + '</h5>';
+        html += '<div class="forensic-grid">';
+        for (let key in result.special_structures) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + (result.special_structures[key] ? '✓' : '✗') + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Hardware Info Section
+      if (result.hardware_info) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🔧 ' + (t('tools.forensicHardwareInfo') || 'Hardware-Details') + '</h5>';
+        html += '<div class="forensic-grid">';
+        for (let key in result.hardware_info) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + key.replace(/_/g, ' ') + ':</span> <span class="forensic-value">' + result.hardware_info[key] + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Controller Info Section
+      if (result.controller_info) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🎛️ ' + (t('tools.forensicController') || 'USB-Controller') + '</h5>';
+        html += '<div class="forensic-grid">';
+        for (let key in result.controller_info) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + key.replace(/_/g, ' ') + ':</span> <span class="forensic-value">' + result.controller_info[key] + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Storage Info Section
+      if (result.storage_info) {
+        html += '<div class="forensic-section">';
+        html += '<h5>💿 ' + (t('tools.forensicStorageInfo') || 'Speicher-Details') + '</h5>';
+        html += '<div class="forensic-grid">';
+        for (let key in result.storage_info) {
+          let value = result.storage_info[key];
+          // Format bytes to human-readable
+          if (key.includes('bytes') && typeof value === 'number') {
+            value = formatBytes(value);
+          }
+          html += '<div class="forensic-item"><span class="forensic-label">' + key.replace(/_/g, ' ') + ':</span> <span class="forensic-value">' + value + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Disk Activity Section
+      if (result.disk_activity) {
+        html += '<div class="forensic-section">';
+        html += '<h5>📊 ' + (t('tools.forensicActivity') || 'Disk-Aktivität') + '</h5>';
+        html += '<div class="forensic-grid">';
+        html += '<div class="forensic-item"><span class="forensic-label">KB/Transfer:</span> <span class="forensic-value">' + result.disk_activity.kb_per_transfer + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">Transfers/s:</span> <span class="forensic-value">' + result.disk_activity.transfers_per_sec + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">MB/s:</span> <span class="forensic-value">' + result.disk_activity.mb_per_sec + '</span></div>';
+        html += '</div></div>';
+      }
+      
+      // MBR Analysis Section
+      if (result.mbr_analysis) {
+        html += '<div class="forensic-section">';
+        html += '<h5>📀 ' + (t('tools.forensicMbrAnalysis') || 'MBR-Analyse') + '</h5>';
+        html += '<div class="forensic-grid">';
+        html += '<div class="forensic-item"><span class="forensic-label">MBR-Signatur:</span> <span class="forensic-value">' + result.mbr_analysis.mbr_signature + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">Gültig:</span> <span class="forensic-value">' + (result.mbr_analysis.valid_mbr ? '✓ Ja' : '✗ Nein') + '</span></div>';
+        html += '</div>';
+        if (result.mbr_analysis.partition_entries && result.mbr_analysis.partition_entries.length > 0) {
+          html += '<div class="forensic-partitions" style="margin-top:8px;">';
+          result.mbr_analysis.partition_entries.forEach(p => {
+            html += '<div class="forensic-partition">';
+            html += '<strong>Partition ' + p.number + '</strong>';
+            html += ' [' + p.type_hex + '] ' + p.type_name;
+            if (p.bootable) html += ' 🚀 Boot';
+            html += '</div>';
+          });
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      
+      // GPT Analysis Section
+      if (result.gpt_analysis) {
+        html += '<div class="forensic-section">';
+        html += '<h5>📦 ' + (t('tools.forensicGptAnalysis') || 'GPT-Analyse') + '</h5>';
+        html += '<div class="forensic-grid">';
+        html += '<div class="forensic-item"><span class="forensic-label">GPT-Signatur:</span> <span class="forensic-value">' + result.gpt_analysis.gpt_signature + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">Gültig:</span> <span class="forensic-value">' + (result.gpt_analysis.valid_gpt ? '✓ Ja' : '✗ Nein') + '</span></div>';
+        if (result.gpt_analysis.gpt_revision) {
+          html += '<div class="forensic-item"><span class="forensic-label">Revision:</span> <span class="forensic-value">' + result.gpt_analysis.gpt_revision + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Filesystem Details Section
+      if (result.filesystem_details) {
+        html += '<div class="forensic-section">';
+        html += '<h5>📁 ' + (t('tools.forensicFsDetails') || 'Dateisystem-Details') + '</h5>';
+        html += '<div class="forensic-grid">';
+        if (result.filesystem_details.total_file_count) {
+          html += '<div class="forensic-item"><span class="forensic-label">Dateien:</span> <span class="forensic-value">' + result.filesystem_details.total_file_count + '</span></div>';
+        }
+        if (result.filesystem_details.directory_count) {
+          html += '<div class="forensic-item"><span class="forensic-label">Ordner:</span> <span class="forensic-value">' + result.filesystem_details.directory_count + '</span></div>';
+        }
+        if (result.filesystem_details.hidden_files_count) {
+          html += '<div class="forensic-item"><span class="forensic-label">Versteckte Dateien:</span> <span class="forensic-value">' + result.filesystem_details.hidden_files_count + '</span></div>';
+        }
+        if (result.filesystem_details.symlink_count) {
+          html += '<div class="forensic-item"><span class="forensic-label">Symlinks:</span> <span class="forensic-value">' + result.filesystem_details.symlink_count + '</span></div>';
+        }
+        if (result.filesystem_details.capacity_percent) {
+          html += '<div class="forensic-item"><span class="forensic-label">Kapazität:</span> <span class="forensic-value">' + result.filesystem_details.capacity_percent + '</span></div>';
+        }
+        if (result.filesystem_details.inode_usage_percent) {
+          html += '<div class="forensic-item"><span class="forensic-label">Inode-Nutzung:</span> <span class="forensic-value">' + result.filesystem_details.inode_usage_percent + '</span></div>';
+        }
+        html += '</div>';
+        
+        // Largest files
+        if (result.filesystem_details.largest_files && result.filesystem_details.largest_files.length > 0) {
+          html += '<div class="forensic-subsection"><strong>' + (t('tools.forensicLargestFiles') || 'Größte Dateien') + ':</strong>';
+          html += '<div class="forensic-filelist">';
+          result.filesystem_details.largest_files.forEach(f => {
+            const sizeFormatted = formatBytes(parseInt(f.size_bytes) || 0);
+            html += '<div class="forensic-file-item"><span class="file-size">' + sizeFormatted + '</span> <span class="file-path">' + f.path + '</span></div>';
+          });
+          html += '</div></div>';
+        }
+        
+        // File type distribution
+        if (result.filesystem_details.file_type_distribution && result.filesystem_details.file_type_distribution.length > 0) {
+          html += '<div class="forensic-subsection"><strong>' + (t('tools.forensicFileTypes') || 'Dateitypen') + ':</strong>';
+          html += '<div class="forensic-types">';
+          result.filesystem_details.file_type_distribution.forEach(ft => {
+            html += '<span class="forensic-type-badge">' + ft.extension + ' (' + ft.count + ')</span>';
+          });
+          html += '</div></div>';
+        }
+        
+        // Recently modified
+        if (result.filesystem_details.recently_modified && result.filesystem_details.recently_modified.length > 0) {
+          html += '<div class="forensic-subsection"><strong>' + (t('tools.forensicRecent') || 'Kürzlich geändert (7 Tage)') + ':</strong>';
+          html += '<div class="forensic-filelist">';
+          result.filesystem_details.recently_modified.forEach(f => {
+            html += '<div class="forensic-file-item"><span class="file-path">' + f + '</span></div>';
+          });
+          html += '</div></div>';
+        }
+        html += '</div>';
+      }
+      
+      // SMART Info Section
+      if (result.smart_info) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🔬 ' + (t('tools.forensicSmart') || 'SMART-Daten') + '</h5>';
+        html += '<div class="forensic-grid">';
+        for (let key in result.smart_info) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + key.replace(/_/g, ' ') + ':</span> <span class="forensic-value">' + result.smart_info[key] + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Sector Checksums Section
+      if (result.sector_checksums) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🔐 ' + (t('tools.forensicChecksums') || 'MBR-Checksummen') + '</h5>';
+        html += '<div class="forensic-grid">';
+        if (result.sector_checksums.mbr_md5) {
+          html += '<div class="forensic-item full-width"><span class="forensic-label">MD5:</span> <span class="forensic-value mono">' + result.sector_checksums.mbr_md5 + '</span></div>';
+        }
+        if (result.sector_checksums.mbr_sha256) {
+          html += '<div class="forensic-item full-width"><span class="forensic-label">SHA256:</span> <span class="forensic-value mono">' + result.sector_checksums.mbr_sha256 + '</span></div>';
+        }
+        html += '</div></div>';
+      }
+      
+      // Raw Header Hex Dump Section
+      if (result.raw_header_hex) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🔢 ' + (t('tools.forensicRawHeader') || 'Raw Header (Hex)') + '</h5>';
+        html += '<pre class="forensic-hexdump">' + result.raw_header_hex + '</pre>';
+        html += '</div>';
+      }
+      
+      html += '</div>';
+      
+      forensicResult.innerHTML = html;
+      forensicResult.classList.remove('hidden');
+      forensicExportSection.classList.remove('hidden');
+      
+      logForensic((t('tools.forensicComplete') || '✓ Forensik-Analyse abgeschlossen!'), 'success');
+    } catch (err) {
+      logForensic((t('tools.forensicError') || 'Forensik-Analyse Fehler') + ': ' + err, 'error');
+      forensicResult.innerHTML = '<div class="forensic-error">' + t('messages.error') + ': ' + err + '</div>';
+      forensicResult.classList.remove('hidden');
+    } finally {
+      forensicBtn.disabled = !selectedForensicDisk;
+    }
+  });
+  
+  // Copy forensic JSON button
+  copyForensicBtn.addEventListener('click', async function() {
+    if (!lastForensicResult) return;
+    const reportText = JSON.stringify(lastForensicResult, null, 2);
+    try {
+      await navigator.clipboard.writeText(reportText);
+      copyForensicBtn.textContent = '✓ Kopiert!';
+      logForensic('JSON-Report in Zwischenablage kopiert', 'success');
+      setTimeout(() => {
+        copyForensicBtn.textContent = '📋 JSON kopieren';
+      }, 2000);
+    } catch (err) {
+      logForensic('Clipboard error: ' + err, 'error');
+    }
+  });
+  
+  // Export as HTML button
+  exportHtmlBtn.addEventListener('click', async function() {
+    if (!lastForensicResult) return;
+    
+    try {
+      const deviceName = (lastForensicResult.disk_info?.Device || lastForensicResult.disk_info?.['Device Identifier'] || 'usb').replace('/dev/', '');
+      const filePath = await save({
+        defaultPath: 'forensic-report-' + deviceName + '.html',
+        filters: [{ name: 'HTML', extensions: ['html'] }]
+      });
+      
+      if (filePath) {
+        const htmlContent = generateForensicHtmlReport(lastForensicResult);
+        await invoke('write_text_file', { path: filePath, content: htmlContent });
+        logForensic('Report als HTML gespeichert: ' + filePath, 'success');
+      }
+    } catch (err) {
+      logForensic('Export-Fehler: ' + err, 'error');
+    }
+  });
+  
+  // Helper function to generate standalone HTML report
+  function generateForensicHtmlReport(result) {
+    const deviceName = result.disk_info?.Device || result.disk_info?.['Device Identifier'] || 'USB';
+    let html = `<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Forensik-Report - ${deviceName}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+    .report { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .header { border-bottom: 2px solid #2196F3; padding-bottom: 10px; margin-bottom: 20px; }
+    .header h1 { margin: 0; color: #2196F3; }
+    .timestamp { color: #666; font-size: 14px; }
+    .section { margin-bottom: 20px; padding: 15px; background: #f9f9f9; border-radius: 6px; }
+    .section h2 { margin: 0 0 10px 0; font-size: 16px; color: #333; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+    .item { display: flex; gap: 5px; }
+    .label { font-weight: 500; color: #555; }
+    .value { color: #333; }
+    .mono { font-family: 'Monaco', 'Consolas', monospace; font-size: 12px; }
+    .hexdump { background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 11px; overflow-x: auto; white-space: pre; }
+    .partition { padding: 5px 10px; background: #e3f2fd; border-radius: 4px; margin: 2px 0; }
+    .filelist { margin-top: 5px; }
+    .file-item { font-size: 13px; padding: 2px 0; }
+    .type-badge { display: inline-block; padding: 2px 8px; background: #e0e0e0; border-radius: 10px; margin: 2px; font-size: 12px; }
+    .full-width { grid-column: 1 / -1; }
+    @media print { body { background: white; } .report { box-shadow: none; } }
+  </style>
+</head>
+<body>
+  <div class="report">
+    <div class="header">
+      <h1>🔬 Forensik-Analyse Report</h1>
+      <div class="timestamp">Erstellt: ${result.timestamp}</div>
+    </div>`;
+    
+    // Device Info
+    html += `<div class="section"><h2>📱 Geräteinformationen</h2><div class="grid">`;
+    for (let key in result.disk_info) {
+      if (result.disk_info[key]) {
+        html += `<div class="item"><span class="label">${key}:</span> <span class="value">${result.disk_info[key]}</span></div>`;
+      }
+    }
+    html += `</div></div>`;
+    
+    // USB Info
+    if (result.usb_info && Object.keys(result.usb_info).length > 0) {
+      html += `<div class="section"><h2>🔌 USB-Controller-Daten</h2><div class="grid">`;
+      for (let key in result.usb_info) {
+        if (result.usb_info[key]) {
+          html += `<div class="item"><span class="label">${key}:</span> <span class="value">${result.usb_info[key]}</span></div>`;
+        }
+      }
+      html += `</div></div>`;
+    }
+    
+    // Boot Info
+    if (result.boot_info) {
+      const hasMbr = result.boot_info.has_mbr_signature || result.boot_info.has_mbr;
+      const hasGpt = result.boot_info.has_gpt;
+      html += `<div class="section"><h2>🚀 Boot-Strukturen</h2><div class="grid">`;
+      html += `<div class="item"><span class="label">MBR-Signatur:</span> <span class="value">${hasMbr ? '✓ (55AA)' : '✗'}</span></div>`;
+      html += `<div class="item"><span class="label">GPT:</span> <span class="value">${hasGpt ? '✓ (EFI PART)' : '✗'}</span></div>`;
+      html += `</div></div>`;
+    }
+    
+    // MBR Analysis
+    if (result.mbr_analysis) {
+      html += `<div class="section"><h2>📀 MBR-Analyse</h2><div class="grid">`;
+      html += `<div class="item"><span class="label">Signatur:</span> <span class="value">${result.mbr_analysis.mbr_signature}</span></div>`;
+      html += `<div class="item"><span class="label">Gültig:</span> <span class="value">${result.mbr_analysis.valid_mbr ? '✓ Ja' : '✗ Nein'}</span></div>`;
+      html += `</div>`;
+      if (result.mbr_analysis.partition_entries && result.mbr_analysis.partition_entries.length > 0) {
+        result.mbr_analysis.partition_entries.forEach(p => {
+          html += `<div class="partition"><strong>Partition ${p.number}</strong> [${p.type_hex}] ${p.type_name} ${p.bootable ? '🚀 Boot' : ''}</div>`;
+        });
+      }
+      html += `</div>`;
+    }
+    
+    // Checksums
+    if (result.sector_checksums) {
+      html += `<div class="section"><h2>🔐 MBR-Checksummen</h2><div class="grid">`;
+      if (result.sector_checksums.mbr_md5) {
+        html += `<div class="item full-width"><span class="label">MD5:</span> <span class="value mono">${result.sector_checksums.mbr_md5}</span></div>`;
+      }
+      if (result.sector_checksums.mbr_sha256) {
+        html += `<div class="item full-width"><span class="label">SHA256:</span> <span class="value mono">${result.sector_checksums.mbr_sha256}</span></div>`;
+      }
+      html += `</div></div>`;
+    }
+    
+    // Raw Header Hex
+    if (result.raw_header_hex) {
+      html += `<div class="section"><h2>🔢 Raw Header (Hex)</h2><pre class="hexdump">${result.raw_header_hex}</pre></div>`;
+    }
+    
+    // JSON Data
+    html += `<div class="section"><h2>📋 Vollständige Daten (JSON)</h2><pre class="mono" style="font-size:10px; max-height:400px; overflow:auto;">${JSON.stringify(result, null, 2)}</pre></div>`;
+    
+    html += `</div></body></html>`;
+    return html;
+  }
+
   // Listen for log events from backend
   listen('log', function(event) {
     const message = event.payload;
@@ -1600,14 +2226,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (operation === 'tools') {
       toolsProgressFill.style.width = percent + '%';
       toolsProgressText.textContent = percent + '%';
-      // Don't show ETA for tools operations (duration is unpredictable)
-      if (percent >= 100) {
-        toolsEta.textContent = '';
-      } else if (percent > 90) {
-        toolsEta.textContent = '⏳';
-      } else {
-        toolsEta.textContent = calculateEta(toolsStartTime, percent);
-      }
+      // ETA is included in the status message from backend
+      toolsEta.textContent = '';
       toolsPhase.textContent = status;
     }
   });
@@ -1686,6 +2306,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         break;
       case 'tab_diagnose':
         document.querySelector('[data-tab="diagnose"]').click();
+        break;
+      case 'tab_tools':
+        document.querySelector('[data-tab="tools"]').click();
+        break;
+      case 'tab_forensic':
+        document.querySelector('[data-tab="forensic"]').click();
         break;
       case 'start_burn':
         if (!burnBtn.disabled) burnBtn.click();
@@ -1792,7 +2418,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initialize
   logBurn('BurnISO to USB ready', 'info');
   logBackup('USB Backup ready', 'info');
-  logDiagnose('USB Diagnose ready', 'info');
+  logDiagnose(t('diagnose.ready'), 'info');
   loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
   loadDisks(backupDiskSelect, backupDiskInfo, logBackup);
   loadDisks(diagnoseDiskSelect, diagnoseDiskInfo, logDiagnose);

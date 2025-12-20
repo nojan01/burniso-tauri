@@ -1317,3 +1317,259 @@ body {
   background: linear-gradient(135deg, #42a5f5 0%, #1e88e5 100%);
 }
 
+/* Forensic Analysis Styles */
+.forensic-result {
+  margin-top: 12px;
+}
+
+.forensic-report {
+  background: var(--surface-secondary);
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 12px;
+}
+
+.forensic-header {
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.forensic-header h4 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.forensic-timestamp {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.forensic-section {
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.forensic-section:last-of-type {
+  border-bottom: none;
+}
+
+.forensic-section h5 {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+.forensic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px 16px;
+}
+
+.forensic-item {
+  display: flex;
+  gap: 6px;
+}
+
+.forensic-item.full-width {
+  grid-column: 1 / -1;
+}
+
+.forensic-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.forensic-value {
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.forensic-partitions,
+.forensic-filesystems {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.forensic-partition,
+.forensic-fs-item {
+  background: var(--surface-primary);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.forensic-partition-raw {
+  background: var(--surface-primary);
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.forensic-hexdump {
+  background: #1a1a2e;
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0;
+  color: #00ff88;
+  line-height: 1.3;
+  border: 1px solid #333;
+}
+
+.forensic-subsection {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.forensic-subsection strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.forensic-filelist {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.forensic-file-item {
+  font-size: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.file-size {
+  color: var(--accent-blue);
+  font-weight: 500;
+  min-width: 60px;
+}
+
+.file-path {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.forensic-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.forensic-type-badge {
+  background: var(--surface-primary);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  color: var(--accent-purple);
+}
+
+.forensic-value.mono {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 9px;
+  word-break: break-all;
+}
+
+.fs-name {
+  font-weight: 600;
+  color: var(--accent-green);
+}
+
+.forensic-toplevel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  grid-column: 1 / -1;
+}
+
+.toplevel-item {
+  background: var(--surface-primary);
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.forensic-actions {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.forensic-actions-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.forensic-export-section {
+  margin-top: 15px;
+}
+
+.export-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.export-buttons .btn {
+  flex: 1;
+  min-width: 150px;
+}
+
+.forensic-error {
+  color: var(--accent-red);
+  background: rgba(239, 83, 80, 0.1);
+  padding: 12px;
+  border-radius: 6px;
+}
+
+.btn.small {
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+.btn.secondary {
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn.secondary:hover {
+  background: var(--surface-tertiary);
+  border-color: var(--accent-blue);
+}
+
+.safe-note {
+  color: var(--accent-green);
+  font-size: 11px;
+  margin-left: 12px;
+}
+
+.forensic-action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+

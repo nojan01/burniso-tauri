@@ -68,6 +68,7 @@
       <button class="tab-btn" data-tab="backup" data-i18n="tabs.backup">USB → ISO</button>
       <button class="tab-btn" data-tab="diagnose" data-i18n="tabs.diagnose">🔍 USB prüfen</button>
       <button class="tab-btn" data-tab="tools" data-i18n="tabs.tools">🛠️ USB Tools</button>
+      <button class="tab-btn" data-tab="forensic" data-i18n="tabs.forensic">🔬 Forensik</button>
     </div>
 
     <!-- ISO to USB Tab -->
@@ -393,7 +394,15 @@
       </div>
 
       <div class="section">
-        <h3>🗑️ <span data-i18n="tools.secureEraseTitle">Sicheres Löschen</span></h3>
+        <h3>� <span data-i18n="tools.repairTitle">First Aid</span></h3>
+
+        <button id="repair-btn" class="btn primary" disabled>
+          🔧 <span data-i18n="tools.repairButton">Datenträger reparieren</span>
+        </button>
+      </div>
+
+      <div class="section">
+        <h3>�🗑️ <span data-i18n="tools.secureEraseTitle">Sicheres Löschen</span></h3>
         <div class="erase-options">
           <label class="radio-option">
             <input type="radio" name="erase-level" value="0" checked />
@@ -436,7 +445,7 @@
 
       <div class="section">
         <h3>🚀 <span data-i18n="tools.bootCheckTitle">Boot-Analyse</span></h3>
-        <button id="bootcheck-btn" class="btn secondary" disabled>
+        <button id="bootcheck-btn" class="btn primary" disabled>
           🚀 <span data-i18n="tools.bootCheckButton">Boot-Analyse starten</span>
         </button>
         <div id="bootcheck-result" class="bootcheck-result hidden"></div>
@@ -457,6 +466,49 @@
       <div class="section">
         <h3>📋 <span data-i18n="tools.log">Protokoll</span></h3>
         <div id="tools-log" class="log-output"></div>
+      </div>
+    </div>
+
+    <!-- Forensic Tab -->
+    <div id="forensic-tab" class="tab-content">
+      <div class="section">
+        <h3>💾 <span data-i18n="forensic.selectUsb">USB-Stick auswählen</span></h3>
+        <div class="disk-row">
+          <select id="forensic-disk-select">
+            <option value="" data-i18n="common.selectDisk">-- USB-Stick wählen --</option>
+          </select>
+          <button id="refresh-forensic-disks" class="btn secondary icon-btn" title="Aktualisieren">🔄</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>🔬 <span data-i18n="forensic.title">Forensische USB-Analyse</span></h3>
+        <div class="forensic-action-row">
+          <button id="forensic-btn" class="btn primary" disabled>
+            🔬 <span data-i18n="forensic.startButton">Forensik-Analyse starten</span>
+          </button>
+          <span class="safe-note">ℹ️ <span data-i18n="forensic.description">Nur lesend – keine Daten werden verändert.</span></span>
+        </div>
+      </div>
+
+      <div id="forensic-result" class="forensic-result hidden"></div>
+
+      <div class="section forensic-export-section hidden" id="forensic-export-section">
+        <h3>📤 <span data-i18n="forensic.exportTitle">Report exportieren</span></h3>
+        <div class="export-buttons">
+          <button id="copy-forensic-btn" class="btn secondary">
+            📋 <span data-i18n="forensic.copyJson">JSON kopieren</span>
+          </button>
+
+          <button id="export-html-btn" class="btn secondary">
+            🌐 <span data-i18n="forensic.exportHtml">Als HTML speichern</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>📋 <span data-i18n="forensic.log">Protokoll</span></h3>
+        <div id="forensic-log" class="log-output"></div>
       </div>
     </div>
   </div>

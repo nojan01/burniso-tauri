@@ -163,14 +163,19 @@
         <p>Sektorgenaues oder dateibasiertes Backup</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🌍</div>
-        <h4>Mehrsprachig</h4>
-        <p>Deutsch und Englisch</p>
+        <div class="feature-icon">🔬</div>
+        <h4>USB Diagnose</h4>
+        <p>Oberflächen-Scan und Geschwindigkeitstest</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🎨</div>
-        <h4>Hell & Dunkel</h4>
-        <p>Wechselbares Design</p>
+        <div class="feature-icon">🛠️</div>
+        <h4>USB Tools</h4>
+        <p>Formatieren, Reparieren, Sicher Löschen</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔍</div>
+        <h4>Forensik-Analyse</h4>
+        <p>Detaillierte technische USB-Informationen</p>
       </div>
     </div>
 
@@ -215,12 +220,84 @@
       <tr><td>USB-Geräte aktualisieren</td><td><kbd>⌘R</kbd></td></tr>
       <tr><td>Tab: ISO → USB</td><td><kbd>⌘1</kbd></td></tr>
       <tr><td>Tab: USB → ISO</td><td><kbd>⌘2</kbd></td></tr>
+      <tr><td>Tab: USB Diagnose</td><td><kbd>⌘3</kbd></td></tr>
+      <tr><td>Tab: USB Tools</td><td><kbd>⌘4</kbd></td></tr>
+      <tr><td>Tab: Forensik</td><td><kbd>⌘5</kbd></td></tr>
       <tr><td>ISO auf USB brennen</td><td><kbd>⌘B</kbd></td></tr>
       <tr><td>USB sichern</td><td><kbd>⌘⇧B</kbd></td></tr>
       <tr><td>Vorgang abbrechen</td><td><kbd>⌘.</kbd></td></tr>
       <tr><td>Dunkles Design</td><td><kbd>⌘⇧D</kbd></td></tr>
       <tr><td>Helles Design</td><td><kbd>⌘⇧L</kbd></td></tr>
     </table>
+
+    <h2>🛠️ USB Tools</h2>
+    <div class="section">
+      <h3>💾 USB formatieren</h3>
+      <p>Formatiert den USB-Stick mit dem gewählten Dateisystem:</p>
+      <ul>
+        <li><strong>FAT32:</strong> Universell kompatibel (max. 4 GB Dateigröße)</li>
+        <li><strong>ExFAT:</strong> Für große Dateien, Windows/Mac kompatibel</li>
+        <li><strong>APFS:</strong> Apple File System (nur macOS)</li>
+        <li><strong>HFS+ (Mac OS Extended):</strong> Klassisches Mac-Format</li>
+      </ul>
+      <p>Partitionsschema: GUID (GPT) oder MBR wählbar.</p>
+      
+      <h3>� First Aid (Reparieren)</h3>
+      <p>Repariert Dateisystem-Fehler auf dem USB-Stick:</p>
+      <ul>
+        <li>Fehlerhafte Verzeichnisstruktur</li>
+        <li>Ungültige Dateizuweisungen</li>
+        <li>Beschädigte Katalog-Dateien</li>
+        <li>Partitionstabellen-Probleme</li>
+      </ul>
+      <p>Repariert automatisch alle Partitionen auf dem ausgewählten Datenträger.</p>
+      
+      <h3>🗑️ Sicher Löschen</h3>
+      <p>Löscht alle Daten unwiderruflich mit verschiedenen Sicherheitsstufen:</p>
+      <table>
+        <tr><th>Stufe</th><th>Beschreibung</th><th>Durchläufe</th></tr>
+        <tr><td>0 - Schnell</td><td>Einmal mit Nullen überschreiben</td><td>1×</td></tr>
+        <tr><td>1 - Sicher</td><td>Einmal mit Zufallsdaten überschreiben</td><td>1×</td></tr>
+        <tr><td>2 - DoD 5220.22-M</td><td>US-Militärstandard</td><td>7×</td></tr>
+        <tr><td>3 - Gutmann</td><td>Maximale Sicherheit (nicht für Flash)</td><td>35×</td></tr>
+        <tr><td>4 - DoE</td><td>Department of Energy Standard</td><td>3×</td></tr>
+      </table>
+      
+      <div class="warning">
+        <strong>⚠️ Warnung:</strong> Bei Stufe 2-4 kann der Löschvorgang mehrere Stunden dauern!
+      </div>
+      
+      <h3>🔍 Boot-Analyse</h3>
+      <p>Analysiert den USB-Stick auf Bootfähigkeit und zeigt:</p>
+      <ul>
+        <li>MBR/GPT Partitionstabelle</li>
+        <li>EFI Boot-Loader Erkennung</li>
+        <li>El Torito (CD/DVD Boot) Erkennung</li>
+        <li>Erkannte Boot-Dateien und Strukturen</li>
+      </ul>
+    </div>
+
+    <h2>🔍 Forensik-Analyse</h2>
+    <div class="section">
+      <p>Erfasst alle verfügbaren technischen Daten eines USB-Sticks (nur lesend):</p>
+      <ul>
+        <li><strong>Geräteinformationen:</strong> Hersteller, Modell, Seriennummer</li>
+        <li><strong>Partitionen:</strong> Layout, Dateisysteme, Größen</li>
+        <li><strong>Boot-Strukturen:</strong> MBR, GPT, EFI-Partition</li>
+        <li><strong>Dateisystem-Details:</strong> NTFS, FAT32, exFAT, ext4, etc.</li>
+        <li><strong>Hash-Werte:</strong> MD5, SHA-256 der ersten Sektoren</li>
+      </ul>
+      
+      <h3>Export-Optionen</h3>
+      <ul>
+        <li><strong>JSON kopieren:</strong> Rohdaten in die Zwischenablage</li>
+        <li><strong>HTML speichern:</strong> Formatierter Report als Datei</li>
+      </ul>
+      
+      <div class="tip">
+        <strong>💡 Tipp:</strong> Die Forensik-Analyse verändert keine Daten auf dem USB-Stick.
+      </div>
+    </div>
 
     <h2>❓ Fehlerbehebung</h2>
     <div class="section">
@@ -252,14 +329,19 @@
         <p>Sector-by-sector or file-based backup</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🌍</div>
-        <h4>Multilingual</h4>
-        <p>German and English</p>
+        <div class="feature-icon">🔬</div>
+        <h4>USB Diagnostic</h4>
+        <p>Surface scan and speed test</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🎨</div>
-        <h4>Light & Dark</h4>
-        <p>Switchable theme</p>
+        <div class="feature-icon">🛠️</div>
+        <h4>USB Tools</h4>
+        <p>Format, Repair, Secure Erase</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔍</div>
+        <h4>Forensic Analysis</h4>
+        <p>Detailed technical USB information</p>
       </div>
     </div>
 
@@ -304,12 +386,84 @@
       <tr><td>Refresh USB devices</td><td><kbd>⌘R</kbd></td></tr>
       <tr><td>Tab: ISO → USB</td><td><kbd>⌘1</kbd></td></tr>
       <tr><td>Tab: USB → ISO</td><td><kbd>⌘2</kbd></td></tr>
+      <tr><td>Tab: USB Diagnostic</td><td><kbd>⌘3</kbd></td></tr>
+      <tr><td>Tab: USB Tools</td><td><kbd>⌘4</kbd></td></tr>
+      <tr><td>Tab: Forensic</td><td><kbd>⌘5</kbd></td></tr>
       <tr><td>Burn ISO to USB</td><td><kbd>⌘B</kbd></td></tr>
       <tr><td>Backup USB</td><td><kbd>⌘⇧B</kbd></td></tr>
       <tr><td>Cancel operation</td><td><kbd>⌘.</kbd></td></tr>
       <tr><td>Dark Mode</td><td><kbd>⌘⇧D</kbd></td></tr>
       <tr><td>Light Mode</td><td><kbd>⌘⇧L</kbd></td></tr>
     </table>
+
+    <h2>🛠️ USB Tools</h2>
+    <div class="section">
+      <h3>💾 Format USB</h3>
+      <p>Formats the USB drive with the selected file system:</p>
+      <ul>
+        <li><strong>FAT32:</strong> Universal compatibility (max. 4 GB file size)</li>
+        <li><strong>ExFAT:</strong> For large files, Windows/Mac compatible</li>
+        <li><strong>APFS:</strong> Apple File System (macOS only)</li>
+        <li><strong>HFS+ (Mac OS Extended):</strong> Classic Mac format</li>
+      </ul>
+      <p>Partition scheme: GUID (GPT) or MBR selectable.</p>
+      
+      <h3>� First Aid (Repair)</h3>
+      <p>Repairs file system errors on the USB drive:</p>
+      <ul>
+        <li>Corrupted directory structure</li>
+        <li>Invalid file allocations</li>
+        <li>Damaged catalog files</li>
+        <li>Partition table issues</li>
+      </ul>
+      <p>Automatically repairs all partitions on the selected disk.</p>
+      
+      <h3>�🗑️ Secure Erase</h3>
+      <p>Permanently deletes all data with various security levels:</p>
+      <table>
+        <tr><th>Level</th><th>Description</th><th>Passes</th></tr>
+        <tr><td>0 - Quick</td><td>Single pass with zeros</td><td>1×</td></tr>
+        <tr><td>1 - Secure</td><td>Single pass with random data</td><td>1×</td></tr>
+        <tr><td>2 - DoD 5220.22-M</td><td>US Military Standard</td><td>7×</td></tr>
+        <tr><td>3 - Gutmann</td><td>Maximum security (not for Flash)</td><td>35×</td></tr>
+        <tr><td>4 - DoE</td><td>Department of Energy Standard</td><td>3×</td></tr>
+      </table>
+      
+      <div class="warning">
+        <strong>⚠️ Warning:</strong> Level 2-4 can take several hours to complete!
+      </div>
+      
+      <h3>🔍 Boot Analysis</h3>
+      <p>Analyzes the USB drive for bootability and displays:</p>
+      <ul>
+        <li>MBR/GPT partition table</li>
+        <li>EFI boot loader detection</li>
+        <li>El Torito (CD/DVD boot) detection</li>
+        <li>Detected boot files and structures</li>
+      </ul>
+    </div>
+
+    <h2>🔍 Forensic Analysis</h2>
+    <div class="section">
+      <p>Collects all available technical data from a USB drive (read-only):</p>
+      <ul>
+        <li><strong>Device Information:</strong> Manufacturer, Model, Serial Number</li>
+        <li><strong>Partitions:</strong> Layout, File Systems, Sizes</li>
+        <li><strong>Boot Structures:</strong> MBR, GPT, EFI Partition</li>
+        <li><strong>File System Details:</strong> NTFS, FAT32, exFAT, ext4, etc.</li>
+        <li><strong>Hash Values:</strong> MD5, SHA-256 of first sectors</li>
+      </ul>
+      
+      <h3>Export Options</h3>
+      <ul>
+        <li><strong>Copy JSON:</strong> Raw data to clipboard</li>
+        <li><strong>Save HTML:</strong> Formatted report as file</li>
+      </ul>
+      
+      <div class="tip">
+        <strong>💡 Tip:</strong> Forensic analysis does not modify any data on the USB drive.
+      </div>
+    </div>
 
     <h2>❓ Troubleshooting</h2>
     <div class="section">

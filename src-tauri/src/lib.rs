@@ -489,6 +489,21 @@ fn get_smartctl_path() -> Option<String> {
     None
 }
 
+/// Write text content to a file
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::Write;
+    
+    let mut file = File::create(&path)
+        .map_err(|e| format!("Datei konnte nicht erstellt werden: {}", e))?;
+    
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Schreibfehler: {}", e))?;
+    
+    Ok(())
+}
+
 /// Check if smartmontools is installed
 #[tauri::command]
 fn check_smartctl_installed() -> bool {
@@ -741,6 +756,39 @@ fn emit_diagnose_progress(app: &AppHandle, percent: u32, status: &str, phase: &s
         read_speed_mbps: read_speed,
         write_speed_mbps: write_speed,
     });
+}
+
+/// Parse dd output to extract speed in MB/s
+/// dd outputs: "8388608 bytes transferred in 0.5 secs (16777216 bytes/sec)"
+fn parse_dd_speed(output: &str) -> f64 {
+    // Try to find "bytes/sec" pattern first (most accurate)
+    if let Some(start) = output.rfind('(') {
+        if let Some(end) = output.find(" bytes/sec)") {
+            if end > start {
+                let speed_str = &output[start + 1..end];
+                if let Ok(bytes_per_sec) = speed_str.parse::<f64>() {
+                    return bytes_per_sec / 1_048_576.0;
+                }
+            }
+        }
+    }
+    
+    // Fallback: parse "X bytes transferred in Y secs"
+    if let Some(bytes_pos) = output.find(" bytes transferred in ") {
+        let before_bytes = &output[..bytes_pos];
+        let bytes_str = before_bytes.split_whitespace().last().unwrap_or("0");
+        let bytes: f64 = bytes_str.parse().unwrap_or(0.0);
+        
+        let after_in = &output[bytes_pos + 22..];
+        let time_str = after_in.split_whitespace().next().unwrap_or("1");
+        let time: f64 = time_str.parse().unwrap_or(1.0);
+        
+        if time > 0.0 && bytes > 0.0 {
+            return (bytes / time) / 1_048_576.0;
+        }
+    }
+    
+    0.0
 }
 
 /// Surface scan - read all sectors and detect read errors (non-destructive)
@@ -1053,13 +1101,18 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
     
     let device_path = format!("/dev/r{}", disk_id);
     
-    // Unmount
+    // Show progress immediately
+    emit_diagnose_progress(&app, 0, "USB-Stick wird vorbereitet...", "preparing", 0, 0, 0.0, 0.0);
+    
+    // Unmount - run in background to not block
     let unmount_script = format!(
         "echo '{}' | sudo -S diskutil unmountDisk force {} 2>&1",
         password.replace("'", "'\\''"),
         disk_id
     );
     let _ = Command::new("sh").args(["-c", &unmount_script]).output();
+    
+    emit_diagnose_progress(&app, 0, "Lese Disk-Informationen...", "preparing", 0, 0, 0.0, 0.0);
     
     // Get disk size
     let size_output = Command::new("diskutil").args(["info", "-plist", &disk_id]).output()
@@ -1068,114 +1121,164 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
     let total_bytes = extract_plist_value(&plist, "TotalSize")
         .ok_or("Failed to get disk size")?;
     
-    // Test with 256MB or 10% of disk, whichever is smaller
-    let test_size = std::cmp::min(256 * 1024 * 1024, total_bytes / 10);
-    const BLOCK_SIZE: u64 = 16 * 1024 * 1024; // 16MB blocks for better throughput
-    let test_blocks = test_size / BLOCK_SIZE;
+    // Test with different block sizes for accurate speed measurement
+    // Larger blocks = more realistic max speed, smaller blocks = more IO overhead
+    // More data per test = better average values
+    let block_sizes: [(u64, &str, u64); 3] = [
+        (1 * 1024 * 1024, "1m", 32),    // 32MB total with 1MB blocks
+        (4 * 1024 * 1024, "4m", 16),    // 64MB total with 4MB blocks
+        (16 * 1024 * 1024, "16m", 8),   // 128MB total with 16MB blocks
+    ];
+    let total_tests = block_sizes.len() as u32;
     
-    emit_diagnose_progress(&app, 0, "Starting speed test...", "writing", 0, 0, 0.0, 0.0);
+    emit_diagnose_progress(&app, 0, "Starte Geschwindigkeitstest...", "starting", 0, 0, 0.0, 0.0);
+    
+    // Clone password for use in blocking thread
+    let password_clone = password.clone();
+    let app_clone = app.clone();
     
     // Run in blocking thread
-    let app_clone = app.clone();
     let result = tokio::task::spawn_blocking(move || {
-        // Create test pattern
-        let write_buffer: Vec<u8> = (0..BLOCK_SIZE as usize).map(|i| (i % 256) as u8).collect();
-        let temp_pattern = "/tmp/burniso_speedtest.bin";
-        if let Ok(mut tf) = File::create(temp_pattern) {
-            let _ = tf.write_all(&write_buffer);
-        }
+        let mut all_results: Vec<(String, f64, f64)> = Vec::new();
+        let mut best_write = 0.0f64;
+        let mut best_read = 0.0f64;
         
-        // Write speed test
-        let write_start = std::time::Instant::now();
-        let mut bytes_written: u64 = 0;
-        
-        for block in 0..test_blocks {
+        for (test_idx, (block_size, bs_str, count)) in block_sizes.iter().enumerate() {
             if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
-                let _ = std::fs::remove_file(temp_pattern);
                 return DiagnoseResult {
                     success: false,
                     total_sectors: total_bytes / 512,
                     sectors_checked: 0,
                     errors_found: 0,
                     bad_sectors: Vec::new(),
-                    read_speed_mbps: 0.0,
-                    write_speed_mbps: 0.0,
-                    message: "Speed test cancelled".to_string(),
+                    read_speed_mbps: best_read,
+                    write_speed_mbps: best_write,
+                    message: "Test abgebrochen".to_string(),
                 };
             }
             
-            let dd_cmd = format!(
-                "echo '{}' | sudo -S dd if={} of={} bs=16m seek={} count=1 conv=notrunc 2>/dev/null",
-                password.replace("'", "'\\''"),
-                temp_pattern,
+            let test_bytes = block_size * count;
+            let test_mb = test_bytes / 1024 / 1024;
+            let block_mb = block_size / 1024 / 1024;
+            let test_name = format!("{}MB Blöcke", block_mb);
+            
+            // Calculate progress percentages
+            let base_progress = ((test_idx as u32) * 100) / total_tests;
+            let mid_progress = base_progress + (50 / total_tests);
+            let end_progress = ((test_idx as u32 + 1) * 100) / total_tests;
+            
+            // === WRITE TEST ===
+            emit_diagnose_progress(&app_clone, base_progress, 
+                &format!("Test {}/{}: {} - Schreibe {} MB...", test_idx + 1, total_tests, test_name, test_mb), 
+                "writing", 0, 0, best_read, best_write);
+            
+            // Small delay to ensure UI updates
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            
+            // Write test - parse dd output for accurate speed measurement
+            // dd outputs speed in stderr like: "8388608 bytes transferred in 0.5 secs (16777216 bytes/sec)"
+            let dd_write = format!(
+                "echo '{}' | sudo -S dd if=/dev/zero of={} bs={} count={} 2>&1",
+                password_clone.replace("'", "'\\''"),
                 device_path,
-                block
+                bs_str,
+                count
             );
             
-            if Command::new("sh").args(["-c", &dd_cmd]).output().is_ok() {
-                bytes_written += BLOCK_SIZE;
+            let write_result = Command::new("sh").args(["-c", &dd_write]).output();
+            
+            // Parse dd output for bytes/sec - check both stdout and stderr
+            let write_speed = match &write_result {
+                Ok(output) => {
+                    let stdout_str = String::from_utf8_lossy(&output.stdout);
+                    let stderr_str = String::from_utf8_lossy(&output.stderr);
+                    // Try stdout first (where 2>&1 should redirect), then stderr
+                    let speed = parse_dd_speed(&stdout_str);
+                    if speed > 0.0 { speed } else { parse_dd_speed(&stderr_str) }
+                },
+                Err(_) => 0.0,
+            };
+            
+            if write_speed > 0.0 {
+                best_write = best_write.max(write_speed);
             }
             
-            if block % 10 == 0 {
-                let percent = ((block + 1) * 50 / test_blocks) as u32;
-                let elapsed = write_start.elapsed().as_secs_f64();
-                let current_speed = if elapsed > 0.0 { (bytes_written as f64 / 1024.0 / 1024.0) / elapsed } else { 0.0 };
-                emit_diagnose_progress(&app_clone, percent, &format!("Writing... {:.1} MB/s", current_speed), "writing", 0, 0, 0.0, current_speed);
-            }
-        }
-        
-        let _ = Command::new("sync").output();
-        let write_time = write_start.elapsed().as_secs_f64();
-        let write_speed = if write_time > 0.0 { (bytes_written as f64 / 1024.0 / 1024.0) / write_time } else { 0.0 };
-        
-        // Read speed test using dd
-        emit_diagnose_progress(&app_clone, 50, "Testing read speed...", "reading", 0, 0, 0.0, write_speed);
-        
-        let read_start = std::time::Instant::now();
-        let mut bytes_read: u64 = 0;
-        
-        for block in 0..test_blocks {
-            if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
-                break;
-            }
+            emit_diagnose_progress(&app_clone, mid_progress, 
+                &format!("Test {}/{}: {} - Schreiben: {:.1} MB/s", test_idx + 1, total_tests, test_name, write_speed), 
+                "writing", 0, 0, best_read, best_write);
             
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            
+            // === READ TEST ===
+            emit_diagnose_progress(&app_clone, mid_progress, 
+                &format!("Test {}/{}: {} - Lese {} MB...", test_idx + 1, total_tests, test_name, test_mb), 
+                "reading", 0, 0, best_read, best_write);
+            
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            
+            // Read test - parse dd output for accurate speed measurement
             let dd_read = format!(
-                "echo '{}' | sudo -S dd if={} bs=16m skip={} count=1 2>/dev/null | wc -c",
-                password.replace("'", "'\\''"),
+                "echo '{}' | sudo -S dd if={} of=/dev/null bs={} count={} 2>&1",
+                password_clone.replace("'", "'\\''"),
                 device_path,
-                block
+                bs_str,
+                count
             );
             
-            if let Ok(output) = Command::new("sh").args(["-c", &dd_read]).output() {
-                let bytes_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let n: u64 = bytes_str.parse().unwrap_or(0);
-                bytes_read += n;
+            let read_result = Command::new("sh").args(["-c", &dd_read]).output();
+            
+            // Parse dd output for bytes/sec - check both stdout and stderr
+            let read_speed = match &read_result {
+                Ok(output) => {
+                    let stdout_str = String::from_utf8_lossy(&output.stdout);
+                    let stderr_str = String::from_utf8_lossy(&output.stderr);
+                    let speed = parse_dd_speed(&stdout_str);
+                    if speed > 0.0 { speed } else { parse_dd_speed(&stderr_str) }
+                },
+                Err(_) => 0.0,
+            };
+            
+            if read_speed > 0.0 {
+                best_read = best_read.max(read_speed);
             }
             
-            if block % 10 == 0 {
-                let percent = 50 + ((block + 1) * 50 / test_blocks) as u32;
-                let elapsed = read_start.elapsed().as_secs_f64();
-                let current_speed = if elapsed > 0.0 { (bytes_read as f64 / 1024.0 / 1024.0) / elapsed } else { 0.0 };
-                emit_diagnose_progress(&app_clone, percent.min(99), &format!("Reading... {:.1} MB/s", current_speed), "reading", 0, 0, current_speed, write_speed);
-            }
+            // Store results
+            all_results.push((test_name.clone(), write_speed, read_speed));
+            
+            emit_diagnose_progress(&app_clone, end_progress, 
+                &format!("Test {}/{}: {} - W: {:.1} / R: {:.1} MB/s", 
+                    test_idx + 1, total_tests, test_name, write_speed, read_speed), 
+                "testing", 0, 0, best_read, best_write);
+            
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
         
-        let read_time = read_start.elapsed().as_secs_f64();
-        let read_speed = if read_time > 0.0 { (bytes_read as f64 / 1024.0 / 1024.0) / read_time } else { 0.0 };
+        // Final summary
+        let message = if all_results.iter().all(|(_, w, r)| *w == 0.0 && *r == 0.0) {
+            "Keine gültigen Testergebnisse. Möglicherweise fehlen Berechtigungen.".to_string()
+        } else {
+            let mut msg = String::from("Geschwindigkeitstest Ergebnisse:\n");
+            for (name, w, r) in &all_results {
+                msg.push_str(&format!("  {}: W {:.1}, R {:.1} MB/s\n", name, w, r));
+            }
+            msg.push_str(&format!("\nBeste Werte: W {:.1}, R {:.1} MB/s", best_write, best_read));
+            msg
+        };
         
-        let _ = std::fs::remove_file(temp_pattern);
+        let success = best_write > 0.0 || best_read > 0.0;
         
-        let message = format!("Speed test complete. Write: {:.1} MB/s, Read: {:.1} MB/s", write_speed, read_speed);
-        emit_diagnose_progress(&app_clone, 100, &message, "complete", 0, 0, read_speed, write_speed);
+        emit_diagnose_progress(&app_clone, 100, 
+            if success { "Test abgeschlossen!" } else { "Test fehlgeschlagen" }, 
+            "complete", 0, 0, best_read, best_write);
         
         DiagnoseResult {
-            success: true,
+            success,
             total_sectors: total_bytes / 512,
-            sectors_checked: bytes_read / 512,
+            sectors_checked: 0,
             errors_found: 0,
             bad_sectors: Vec::new(),
-            read_speed_mbps: read_speed,
-            write_speed_mbps: write_speed,
+            read_speed_mbps: best_read,
+            write_speed_mbps: best_write,
             message,
         }
     }).await.map_err(|e| e.to_string())?;
@@ -1406,6 +1509,138 @@ static CANCEL_TOOLS: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 fn cancel_tools() {
     CANCEL_TOOLS.store(true, Ordering::SeqCst);
+}
+
+/// Repair a USB disk filesystem
+#[tauri::command]
+async fn repair_disk(
+    app: AppHandle,
+    disk_id: String,
+    password: String,
+) -> Result<String, String> {
+    CANCEL_TOOLS.store(false, Ordering::SeqCst);
+    
+    let disk_path = format!("/dev/{}", disk_id);
+    
+    emit_progress(&app, 5, "Starting disk repair...", "tools");
+    
+    // Get list of partitions on this disk
+    let diskutil_list = Command::new("diskutil")
+        .args(["list", &disk_path])
+        .output();
+    
+    let mut partitions: Vec<String> = Vec::new();
+    
+    if let Ok(output) = diskutil_list {
+        let list_str = String::from_utf8_lossy(&output.stdout);
+        for line in list_str.lines() {
+            // Look for partition identifiers like "disk4s1", "disk4s2", etc.
+            if let Some(id) = line.split_whitespace().last() {
+                if id.starts_with(&disk_id) && id.contains('s') && id != disk_id {
+                    partitions.push(id.to_string());
+                }
+            }
+        }
+    }
+    
+    emit_progress(&app, 10, &format!("Found {} partition(s)", partitions.len()), "tools");
+    
+    // If no partitions found, try repairing the whole disk
+    if partitions.is_empty() {
+        partitions.push(disk_id.clone());
+    }
+    
+    let mut all_results = Vec::new();
+    let mut any_success = false;
+    let partition_count = partitions.len();
+    
+    for (idx, partition) in partitions.iter().enumerate() {
+        let partition_path = format!("/dev/{}", partition);
+        let progress_base = 15 + (idx as u32 * 70 / partition_count as u32);
+        
+        // Check filesystem type for this partition
+        let diskutil_info = Command::new("diskutil")
+            .args(["info", &partition_path])
+            .output();
+        
+        let mut filesystem = String::new();
+        if let Ok(output) = diskutil_info {
+            let info_str = String::from_utf8_lossy(&output.stdout);
+            for line in info_str.lines() {
+                if line.contains("File System Personality:") || line.contains("Type (Bundle):") {
+                    filesystem = line.split(':').nth(1).unwrap_or("").trim().to_string();
+                    break;
+                }
+            }
+        }
+        
+        emit_progress(&app, progress_base, &format!("Repairing {} ({})...", partition, if filesystem.is_empty() { "Unknown" } else { &filesystem }), "tools");
+        
+        // Unmount first
+        let _ = Command::new("diskutil")
+            .args(["unmount", &partition_path])
+            .output();
+        
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        
+        // Use repairVolume for partitions, repairDisk for whole disk
+        let repair_cmd = if partition.contains('s') {
+            format!("diskutil repairVolume {}", partition_path)
+        } else {
+            format!("diskutil repairDisk {}", partition_path)
+        };
+        
+        let mut child = Command::new("sudo")
+            .args(["-S", "sh", "-c", &repair_cmd])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Repair error: {}", e))?;
+        
+        // Send password
+        if let Some(ref mut stdin) = child.stdin {
+            writeln!(stdin, "{}", password).ok();
+        }
+        drop(child.stdin.take());
+        
+        // Wait for completion
+        let output = child.wait_with_output().map_err(|e| format!("Wait error: {}", e))?;
+        
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{}{}", stdout_str, stderr_str);
+        
+        // Check result
+        if output.status.success() || combined.contains("appears to be OK") || combined.contains("exit code is 0") {
+            any_success = true;
+            all_results.push(format!("✓ {}: OK", partition));
+        } else if combined.contains("repaired") {
+            any_success = true;
+            all_results.push(format!("✓ {}: Repaired", partition));
+        } else {
+            // Extract meaningful error
+            let error_line = combined.lines()
+                .find(|l| l.contains("Error") || l.contains("error") || l.contains("failed"))
+                .unwrap_or("Unknown error");
+            all_results.push(format!("✗ {}: {}", partition, error_line.trim()));
+        }
+        
+        // Try to remount
+        let _ = Command::new("diskutil")
+            .args(["mount", &partition_path])
+            .output();
+    }
+    
+    emit_progress(&app, 100, "Repair complete!", "tools");
+    
+    let result_text = all_results.join("\n");
+    
+    if any_success {
+        Ok(format!("Repair completed:\n{}", result_text))
+    } else {
+        Err(format!("Repair failed:\n{}", result_text))
+    }
 }
 
 /// Format a USB disk with the specified filesystem
@@ -1719,6 +1954,957 @@ async fn secure_erase(
     
     emit_progress(&app, 100, "Secure erase complete!", "tools");
     Ok(format!("USB securely erased ({})", level_desc))
+}
+
+/// Forensic analysis - gather all available information about a USB device
+#[tauri::command]
+async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_json::Value, String> {
+    let escaped_password = password.replace("'", "'\\''");
+    let mut result = serde_json::json!({
+        "disk_id": disk_id,
+        "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    });
+    
+    // 1. Get basic disk info from diskutil
+    let diskutil_cmd = format!(
+        "echo '{}' | sudo -S diskutil info {} 2>/dev/null",
+        escaped_password, disk_id
+    );
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &diskutil_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut disk_info = serde_json::Map::new();
+        
+        for line in stdout.lines() {
+            if let Some((key, value)) = line.split_once(':') {
+                let key = key.trim();
+                let value = value.trim();
+                if !value.is_empty() {
+                    match key {
+                        "Device Identifier" => { disk_info.insert("device_id".to_string(), serde_json::json!(value)); },
+                        "Device Node" => { disk_info.insert("device_node".to_string(), serde_json::json!(value)); },
+                        "Whole" => { disk_info.insert("is_whole_disk".to_string(), serde_json::json!(value == "Yes")); },
+                        "Part of Whole" => { disk_info.insert("parent_disk".to_string(), serde_json::json!(value)); },
+                        "Device / Media Name" => { disk_info.insert("media_name".to_string(), serde_json::json!(value)); },
+                        "Volume Name" => { disk_info.insert("volume_name".to_string(), serde_json::json!(value)); },
+                        "Mounted" => { disk_info.insert("is_mounted".to_string(), serde_json::json!(value == "Yes")); },
+                        "Mount Point" => { disk_info.insert("mount_point".to_string(), serde_json::json!(value)); },
+                        "Content (IOContent)" => { disk_info.insert("content_type".to_string(), serde_json::json!(value)); },
+                        "File System Personality" => { disk_info.insert("filesystem".to_string(), serde_json::json!(value)); },
+                        "Type (Bundle)" => { disk_info.insert("filesystem_bundle".to_string(), serde_json::json!(value)); },
+                        "Name (User Visible)" => { disk_info.insert("filesystem_name".to_string(), serde_json::json!(value)); },
+                        "Disk Size" => { disk_info.insert("disk_size".to_string(), serde_json::json!(value)); },
+                        "Device Block Size" => { disk_info.insert("block_size".to_string(), serde_json::json!(value)); },
+                        "Volume Total Space" => { disk_info.insert("total_space".to_string(), serde_json::json!(value)); },
+                        "Volume Free Space" => { disk_info.insert("free_space".to_string(), serde_json::json!(value)); },
+                        "Volume Used Space" => { disk_info.insert("used_space".to_string(), serde_json::json!(value)); },
+                        "Allocation Block Size" => { disk_info.insert("allocation_block_size".to_string(), serde_json::json!(value)); },
+                        "Read-Only Media" => { disk_info.insert("read_only".to_string(), serde_json::json!(value == "Yes")); },
+                        "Read-Only Volume" => { disk_info.insert("volume_read_only".to_string(), serde_json::json!(value == "Yes")); },
+                        "Device Location" => { disk_info.insert("location".to_string(), serde_json::json!(value)); },
+                        "Removable Media" => { disk_info.insert("removable".to_string(), serde_json::json!(value == "Removable")); },
+                        "Media Type" => { disk_info.insert("media_type".to_string(), serde_json::json!(value)); },
+                        "Protocol" => { disk_info.insert("protocol".to_string(), serde_json::json!(value)); },
+                        "SMART Status" => { disk_info.insert("smart_status".to_string(), serde_json::json!(value)); },
+                        "Solid State" => { disk_info.insert("is_ssd".to_string(), serde_json::json!(value == "Yes")); },
+                        "Virtual" => { disk_info.insert("is_virtual".to_string(), serde_json::json!(value == "Yes")); },
+                        "OS Can Be Installed" => { disk_info.insert("os_installable".to_string(), serde_json::json!(value == "Yes")); },
+                        "Bootable" => { disk_info.insert("bootable".to_string(), serde_json::json!(value == "Yes")); },
+                        "Boot Disk" => { disk_info.insert("is_boot_disk".to_string(), serde_json::json!(value == "Yes")); },
+                        "Disk / Partition UUID" => { disk_info.insert("uuid".to_string(), serde_json::json!(value)); },
+                        "Volume UUID" => { disk_info.insert("volume_uuid".to_string(), serde_json::json!(value)); },
+                        "Partition Type" => { disk_info.insert("partition_type".to_string(), serde_json::json!(value)); },
+                        _ => {}
+                    }
+                }
+            }
+        }
+        result["disk_info"] = serde_json::json!(disk_info);
+    }
+    
+    // 2. Get partition layout
+    let partitions_cmd = format!(
+        "echo '{}' | sudo -S diskutil list {} 2>/dev/null",
+        escaped_password, disk_id
+    );
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &partitions_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        result["partition_layout"] = serde_json::json!(stdout.trim());
+    }
+    
+    // 3. Get USB device info from system_profiler
+    let usb_cmd = "system_profiler SPUSBDataType -json 2>/dev/null";
+    if let Ok(output) = Command::new("sh").args(["-c", usb_cmd]).output() {
+        if let Ok(json_data) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            // Parse USB device tree to find our device
+            if let Some(usb_info) = find_usb_device_info(&json_data, &disk_id) {
+                result["usb_info"] = usb_info;
+            }
+        }
+    }
+    
+    // 4. Analyze boot capability
+    let boot_info = analyze_boot_structure(&disk_id, &escaped_password);
+    result["boot_info"] = boot_info;
+    
+    // 5. Detect filesystem signatures from raw device
+    if let Some(fs_info) = detect_filesystem_signatures(&disk_id, &escaped_password) {
+        result["filesystem_signatures"] = fs_info;
+    }
+    
+    // 6. Get file count and directory structure (if mounted)
+    if let Some(mount_point) = result.get("disk_info")
+        .and_then(|d| d.get("mount_point"))
+        .and_then(|m| m.as_str()) 
+    {
+        if !mount_point.is_empty() {
+            if let Some(content_info) = analyze_mounted_content(mount_point) {
+                result["content_analysis"] = content_info;
+            }
+        }
+    }
+    
+    // 7. Check for hidden files and special structures
+    if let Some(special_info) = detect_special_structures(&disk_id, &escaped_password) {
+        result["special_structures"] = special_info;
+    }
+    
+    // 8. Get detailed hardware info via ioreg
+    let ioreg_cmd = format!(
+        "ioreg -r -c IOMedia -l 2>/dev/null | grep -A50 'BSD Name.*{}' | head -60",
+        disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &ioreg_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut hw_info = serde_json::Map::new();
+        
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.contains("\"Size\"") {
+                if let Some(size) = line.split('=').nth(1) {
+                    hw_info.insert("exact_size_bytes".to_string(), serde_json::json!(size.trim()));
+                }
+            } else if line.contains("\"Preferred Block Size\"") {
+                if let Some(bs) = line.split('=').nth(1) {
+                    hw_info.insert("preferred_block_size".to_string(), serde_json::json!(bs.trim()));
+                }
+            } else if line.contains("\"Physical Block Size\"") {
+                if let Some(pbs) = line.split('=').nth(1) {
+                    hw_info.insert("physical_block_size".to_string(), serde_json::json!(pbs.trim()));
+                }
+            } else if line.contains("\"Removable\"") {
+                hw_info.insert("hardware_removable".to_string(), serde_json::json!(line.contains("Yes")));
+            } else if line.contains("\"Ejectable\"") {
+                hw_info.insert("ejectable".to_string(), serde_json::json!(line.contains("Yes")));
+            } else if line.contains("\"Whole\"") {
+                hw_info.insert("is_whole_disk".to_string(), serde_json::json!(line.contains("Yes")));
+            }
+        }
+        
+        if !hw_info.is_empty() {
+            result["hardware_info"] = serde_json::json!(hw_info);
+        }
+    }
+    
+    // 9. Get USB controller path info
+    let usb_path_cmd = format!(
+        "system_profiler SPUSBDataType 2>/dev/null | grep -B30 '{}' | head -35",
+        disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &usb_path_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut controller_info = serde_json::Map::new();
+        
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.starts_with("USB") && line.contains("Bus") {
+                controller_info.insert("usb_bus".to_string(), serde_json::json!(line));
+            } else if line.contains("Host Controller") {
+                if let Some((_, val)) = line.split_once(':') {
+                    controller_info.insert("host_controller".to_string(), serde_json::json!(val.trim()));
+                }
+            } else if line.contains("PCI Device ID") {
+                if let Some((_, val)) = line.split_once(':') {
+                    controller_info.insert("pci_device_id".to_string(), serde_json::json!(val.trim()));
+                }
+            } else if line.contains("PCI Vendor ID") {
+                if let Some((_, val)) = line.split_once(':') {
+                    controller_info.insert("pci_vendor_id".to_string(), serde_json::json!(val.trim()));
+                }
+            } else if line.contains("PCI Revision ID") {
+                if let Some((_, val)) = line.split_once(':') {
+                    controller_info.insert("pci_revision_id".to_string(), serde_json::json!(val.trim()));
+                }
+            }
+        }
+        
+        if !controller_info.is_empty() {
+            result["controller_info"] = serde_json::json!(controller_info);
+        }
+    }
+    
+    // 10. Get storage type info
+    let storage_cmd = "system_profiler SPStorageDataType -json 2>/dev/null";
+    if let Ok(output) = Command::new("sh").args(["-c", storage_cmd]).output() {
+        if let Ok(json_data) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            if let Some(storage) = json_data.get("SPStorageDataType").and_then(|s| s.as_array()) {
+                for vol in storage {
+                    if let Some(bsd) = vol.get("bsd_name").and_then(|b| b.as_str()) {
+                        if bsd == disk_id || disk_id.starts_with(bsd) || bsd.starts_with(&disk_id) {
+                            let mut storage_info = serde_json::Map::new();
+                            if let Some(name) = vol.get("_name").and_then(|n| n.as_str()) {
+                                storage_info.insert("storage_name".to_string(), serde_json::json!(name));
+                            }
+                            if let Some(size) = vol.get("size_in_bytes") {
+                                storage_info.insert("size_in_bytes".to_string(), size.clone());
+                            }
+                            if let Some(free) = vol.get("free_space_in_bytes") {
+                                storage_info.insert("free_space_in_bytes".to_string(), free.clone());
+                            }
+                            if let Some(writable) = vol.get("writable").and_then(|w| w.as_str()) {
+                                storage_info.insert("writable".to_string(), serde_json::json!(writable));
+                            }
+                            if let Some(ignore) = vol.get("ignore_ownership").and_then(|i| i.as_str()) {
+                                storage_info.insert("ignore_ownership".to_string(), serde_json::json!(ignore));
+                            }
+                            if !storage_info.is_empty() {
+                                result["storage_info"] = serde_json::json!(storage_info);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 11. Get disk activity statistics via iostat
+    let iostat_cmd = format!("iostat -d {} 2>/dev/null | tail -1", disk_id);
+    if let Ok(output) = Command::new("sh").args(["-c", &iostat_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = stdout.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let mut iostat_info = serde_json::Map::new();
+            iostat_info.insert("kb_per_transfer".to_string(), serde_json::json!(parts.get(0).unwrap_or(&"N/A")));
+            iostat_info.insert("transfers_per_sec".to_string(), serde_json::json!(parts.get(1).unwrap_or(&"N/A")));
+            iostat_info.insert("mb_per_sec".to_string(), serde_json::json!(parts.get(2).unwrap_or(&"N/A")));
+            result["disk_activity"] = serde_json::json!(iostat_info);
+        }
+    }
+    
+    // 12. Get raw hex dump of first sectors (MBR/GPT header preview)
+    let hexdump_cmd = format!(
+        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=2 2>/dev/null | xxd -l 128 -c 16",
+        escaped_password, disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &hexdump_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.is_empty() {
+            result["raw_header_hex"] = serde_json::json!(stdout.trim());
+        }
+    }
+    
+    // 13. Parse MBR partition table entries
+    let mbr_cmd = format!(
+        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=1 2>/dev/null | xxd -p -l 512",
+        escaped_password, disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &mbr_cmd]).output() {
+        let hex_str = String::from_utf8_lossy(&output.stdout).replace("\n", "");
+        if hex_str.len() >= 1024 {
+            let mut mbr_info = serde_json::Map::new();
+            
+            // Check MBR signature (bytes 510-511 = 55AA)
+            let sig = &hex_str[1020..1024];
+            mbr_info.insert("mbr_signature".to_string(), serde_json::json!(sig.to_uppercase()));
+            mbr_info.insert("valid_mbr".to_string(), serde_json::json!(sig == "55aa"));
+            
+            // Parse 4 partition entries (bytes 446-509)
+            let mut partitions = Vec::new();
+            for i in 0..4 {
+                let start = 892 + (i * 32); // 446 bytes * 2 hex chars
+                let end = start + 32;
+                if end <= hex_str.len() {
+                    let entry = &hex_str[start..end];
+                    let boot_flag = &entry[0..2];
+                    let part_type = &entry[8..10];
+                    
+                    // Only add non-empty partitions
+                    if part_type != "00" {
+                        let mut part = serde_json::Map::new();
+                        part.insert("number".to_string(), serde_json::json!(i + 1));
+                        part.insert("bootable".to_string(), serde_json::json!(boot_flag == "80"));
+                        part.insert("type_hex".to_string(), serde_json::json!(part_type.to_uppercase()));
+                        
+                        // Common partition type names
+                        let type_name = match part_type {
+                            "00" => "Empty",
+                            "01" => "FAT12",
+                            "04" | "06" | "0e" => "FAT16",
+                            "05" | "0f" => "Extended",
+                            "07" => "NTFS/exFAT/HPFS",
+                            "0b" | "0c" => "FAT32",
+                            "82" => "Linux Swap",
+                            "83" => "Linux",
+                            "8e" => "Linux LVM",
+                            "af" => "HFS/HFS+",
+                            "ee" => "GPT Protective MBR",
+                            "ef" => "EFI System",
+                            "fb" => "VMware VMFS",
+                            "fd" => "Linux RAID",
+                            _ => "Unknown"
+                        };
+                        part.insert("type_name".to_string(), serde_json::json!(type_name));
+                        partitions.push(serde_json::json!(part));
+                    }
+                }
+            }
+            mbr_info.insert("partition_entries".to_string(), serde_json::json!(partitions));
+            result["mbr_analysis"] = serde_json::json!(mbr_info);
+        }
+    }
+    
+    // 14. Get GPT header details
+    let gpt_cmd = format!(
+        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 skip=1 count=1 2>/dev/null | xxd -p -l 512",
+        escaped_password, disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &gpt_cmd]).output() {
+        let hex_str = String::from_utf8_lossy(&output.stdout).replace("\n", "");
+        // Check for "EFI PART" signature (45 46 49 20 50 41 52 54)
+        if hex_str.starts_with("4546492050415254") {
+            let mut gpt_info = serde_json::Map::new();
+            gpt_info.insert("gpt_signature".to_string(), serde_json::json!("EFI PART"));
+            gpt_info.insert("valid_gpt".to_string(), serde_json::json!(true));
+            
+            // GPT revision (bytes 8-11)
+            if hex_str.len() >= 24 {
+                let rev = &hex_str[16..24];
+                gpt_info.insert("gpt_revision".to_string(), serde_json::json!(rev));
+            }
+            
+            // Header size (bytes 12-15)
+            if hex_str.len() >= 32 {
+                let size_hex = &hex_str[24..32];
+                gpt_info.insert("header_size_hex".to_string(), serde_json::json!(size_hex));
+            }
+            
+            result["gpt_analysis"] = serde_json::json!(gpt_info);
+        }
+    }
+    
+    // 15. Analyze mounted filesystem details
+    if let Some(mount_point) = result.get("disk_info")
+        .and_then(|d| d.get("mount_point"))
+        .and_then(|m| m.as_str()) 
+    {
+        if !mount_point.is_empty() {
+            let mut fs_details = serde_json::Map::new();
+            
+            // Get filesystem stats via df
+            let df_cmd = format!("df -i '{}' 2>/dev/null | tail -1", mount_point);
+            if let Ok(output) = Command::new("sh").args(["-c", &df_cmd]).output() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = stdout.split_whitespace().collect();
+                if parts.len() >= 9 {
+                    fs_details.insert("total_blocks".to_string(), serde_json::json!(parts.get(1).unwrap_or(&"")));
+                    fs_details.insert("used_blocks".to_string(), serde_json::json!(parts.get(2).unwrap_or(&"")));
+                    fs_details.insert("free_blocks".to_string(), serde_json::json!(parts.get(3).unwrap_or(&"")));
+                    fs_details.insert("capacity_percent".to_string(), serde_json::json!(parts.get(4).unwrap_or(&"")));
+                    fs_details.insert("total_inodes".to_string(), serde_json::json!(parts.get(5).unwrap_or(&"")));
+                    fs_details.insert("used_inodes".to_string(), serde_json::json!(parts.get(6).unwrap_or(&"")));
+                    fs_details.insert("free_inodes".to_string(), serde_json::json!(parts.get(7).unwrap_or(&"")));
+                    fs_details.insert("inode_usage_percent".to_string(), serde_json::json!(parts.get(8).unwrap_or(&"")));
+                }
+            }
+            
+            // Count hidden files
+            let hidden_cmd = format!("find '{}' -name '.*' -maxdepth 2 2>/dev/null | wc -l", mount_point);
+            if let Ok(output) = Command::new("sh").args(["-c", &hidden_cmd]).output() {
+                let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                fs_details.insert("hidden_files_count".to_string(), serde_json::json!(count));
+            }
+            
+            // Get top 5 largest files
+            let large_cmd = format!("find '{}' -type f -exec stat -f '%z %N' {{}} \\; 2>/dev/null | sort -rn | head -5", mount_point);
+            if let Ok(output) = Command::new("sh").args(["-c", &large_cmd]).output() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let files: Vec<serde_json::Value> = stdout.lines()
+                    .filter_map(|line| {
+                        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+                        if parts.len() == 2 {
+                            Some(serde_json::json!({
+                                "size_bytes": parts[0],
+                                "path": parts[1].replace(mount_point, "")
+                            }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !files.is_empty() {
+                    fs_details.insert("largest_files".to_string(), serde_json::json!(files));
+                }
+            }
+            
+            // Get file type distribution
+            let types_cmd = format!(
+                "find '{}' -type f -maxdepth 3 2>/dev/null | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -10",
+                mount_point
+            );
+            if let Ok(output) = Command::new("sh").args(["-c", &types_cmd]).output() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let types: Vec<serde_json::Value> = stdout.lines()
+                    .filter_map(|line| {
+                        let line = line.trim();
+                        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+                        if parts.len() == 2 {
+                            Some(serde_json::json!({
+                                "count": parts[0].trim(),
+                                "extension": parts[1].trim()
+                            }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !types.is_empty() {
+                    fs_details.insert("file_type_distribution".to_string(), serde_json::json!(types));
+                }
+            }
+            
+            // Get recent files (last modified)
+            let recent_cmd = format!(
+                "find '{}' -type f -maxdepth 3 -mtime -7 2>/dev/null | head -10",
+                mount_point
+            );
+            if let Ok(output) = Command::new("sh").args(["-c", &recent_cmd]).output() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let files: Vec<String> = stdout.lines()
+                    .map(|l| l.replace(mount_point, "").to_string())
+                    .collect();
+                if !files.is_empty() {
+                    fs_details.insert("recently_modified".to_string(), serde_json::json!(files));
+                }
+            }
+            
+            // Get directory count
+            let dir_cmd = format!("find '{}' -type d 2>/dev/null | wc -l", mount_point);
+            if let Ok(output) = Command::new("sh").args(["-c", &dir_cmd]).output() {
+                let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                fs_details.insert("directory_count".to_string(), serde_json::json!(count));
+            }
+            
+            // Get total file count
+            let file_cmd = format!("find '{}' -type f 2>/dev/null | wc -l", mount_point);
+            if let Ok(output) = Command::new("sh").args(["-c", &file_cmd]).output() {
+                let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                fs_details.insert("total_file_count".to_string(), serde_json::json!(count));
+            }
+            
+            // Get symlink count
+            let link_cmd = format!("find '{}' -type l 2>/dev/null | wc -l", mount_point);
+            if let Ok(output) = Command::new("sh").args(["-c", &link_cmd]).output() {
+                let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                fs_details.insert("symlink_count".to_string(), serde_json::json!(count));
+            }
+            
+            if !fs_details.is_empty() {
+                result["filesystem_details"] = serde_json::json!(fs_details);
+            }
+        }
+    }
+    
+    // 16. Check for SMART support (usually not on USB, but worth trying)
+    let smart_cmd = format!(
+        "smartctl -i /dev/{} 2>/dev/null | head -20",
+        disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &smart_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("Device Model") || stdout.contains("Vendor") {
+            let mut smart_info = serde_json::Map::new();
+            for line in stdout.lines() {
+                if let Some((key, value)) = line.split_once(':') {
+                    let key = key.trim();
+                    let value = value.trim();
+                    if !value.is_empty() {
+                        match key {
+                            "Device Model" => { smart_info.insert("device_model".to_string(), serde_json::json!(value)); },
+                            "Serial Number" => { smart_info.insert("serial_number".to_string(), serde_json::json!(value)); },
+                            "Firmware Version" => { smart_info.insert("firmware_version".to_string(), serde_json::json!(value)); },
+                            "User Capacity" => { smart_info.insert("capacity".to_string(), serde_json::json!(value)); },
+                            "Sector Size" => { smart_info.insert("sector_size".to_string(), serde_json::json!(value)); },
+                            "Rotation Rate" => { smart_info.insert("rotation_rate".to_string(), serde_json::json!(value)); },
+                            "Form Factor" => { smart_info.insert("form_factor".to_string(), serde_json::json!(value)); },
+                            "SMART support is" => { smart_info.insert("smart_supported".to_string(), serde_json::json!(value)); },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if !smart_info.is_empty() {
+                result["smart_info"] = serde_json::json!(smart_info);
+            }
+        }
+    }
+    
+    // 17. Calculate checksums of first sector
+    let checksum_cmd = format!(
+        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=1 2>/dev/null | md5",
+        escaped_password, disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &checksum_cmd]).output() {
+        let md5 = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !md5.is_empty() {
+            let mut checksums = serde_json::Map::new();
+            checksums.insert("mbr_md5".to_string(), serde_json::json!(md5));
+            
+            // Also get SHA256
+            let sha_cmd = format!(
+                "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=1 2>/dev/null | shasum -a 256",
+                escaped_password, disk_id
+            );
+            if let Ok(sha_out) = Command::new("sh").args(["-c", &sha_cmd]).output() {
+                let sha = String::from_utf8_lossy(&sha_out.stdout);
+                if let Some(hash) = sha.split_whitespace().next() {
+                    checksums.insert("mbr_sha256".to_string(), serde_json::json!(hash));
+                }
+            }
+            
+            result["sector_checksums"] = serde_json::json!(checksums);
+        }
+    }
+    
+    Ok(result)
+}
+
+/// Find USB device info from system_profiler JSON
+fn find_usb_device_info(json_data: &serde_json::Value, disk_id: &str) -> Option<serde_json::Value> {
+    fn search_devices(items: &serde_json::Value, disk_id: &str) -> Option<serde_json::Value> {
+        if let Some(array) = items.as_array() {
+            for item in array {
+                // Check if this device has a Media entry matching our disk
+                if let Some(media) = item.get("Media") {
+                    if let Some(media_arr) = media.as_array() {
+                        for m in media_arr {
+                            if let Some(bsd) = m.get("bsd_name").and_then(|b| b.as_str()) {
+                                if bsd == disk_id || disk_id.starts_with(bsd) {
+                                    let mut info = serde_json::Map::new();
+                                    if let Some(name) = item.get("_name").and_then(|n| n.as_str()) {
+                                        info.insert("product_name".to_string(), serde_json::json!(name));
+                                    }
+                                    if let Some(manufacturer) = item.get("manufacturer").and_then(|m| m.as_str()) {
+                                        info.insert("manufacturer".to_string(), serde_json::json!(manufacturer));
+                                    }
+                                    if let Some(vendor_id) = item.get("vendor_id").and_then(|v| v.as_str()) {
+                                        info.insert("vendor_id".to_string(), serde_json::json!(vendor_id));
+                                    }
+                                    if let Some(product_id) = item.get("product_id").and_then(|p| p.as_str()) {
+                                        info.insert("product_id".to_string(), serde_json::json!(product_id));
+                                    }
+                                    if let Some(serial) = item.get("serial_num").and_then(|s| s.as_str()) {
+                                        info.insert("serial_number".to_string(), serde_json::json!(serial));
+                                    }
+                                    if let Some(speed) = item.get("device_speed").and_then(|s| s.as_str()) {
+                                        info.insert("usb_speed".to_string(), serde_json::json!(speed));
+                                    }
+                                    if let Some(version) = item.get("bcd_device").and_then(|v| v.as_str()) {
+                                        info.insert("device_version".to_string(), serde_json::json!(version));
+                                    }
+                                    if let Some(bus_power) = item.get("bus_power").and_then(|b| b.as_str()) {
+                                        info.insert("bus_power_ma".to_string(), serde_json::json!(bus_power));
+                                    }
+                                    if let Some(bus_power_used) = item.get("bus_power_used").and_then(|b| b.as_str()) {
+                                        info.insert("bus_power_used_ma".to_string(), serde_json::json!(bus_power_used));
+                                    }
+                                    if let Some(extra_current) = item.get("extra_current_used").and_then(|e| e.as_str()) {
+                                        info.insert("extra_current_ma".to_string(), serde_json::json!(extra_current));
+                                    }
+                                    return Some(serde_json::json!(info));
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Recursively search in _items
+                if let Some(sub_items) = item.get("_items") {
+                    if let Some(found) = search_devices(sub_items, disk_id) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        None
+    }
+    
+    if let Some(usb_data) = json_data.get("SPUSBDataType") {
+        return search_devices(usb_data, disk_id);
+    }
+    None
+}
+
+/// Analyze boot structure of the disk
+fn analyze_boot_structure(disk_id: &str, password: &str) -> serde_json::Value {
+    let device_path = format!("/dev/r{}", disk_id);
+    let mut boot_info = serde_json::Map::new();
+    
+    // Read raw bytes using Python for reliable access
+    let python_script = format!(
+        r#"
+import os, sys
+
+device = "{}"
+try:
+    fd = os.open(device, os.O_RDONLY)
+    with os.fdopen(fd, 'rb') as f:
+        # Read first 64KB
+        data = f.read(65536)
+        
+        # MBR analysis
+        if len(data) >= 512:
+            mbr = data[:512]
+            has_mbr_sig = mbr[510] == 0x55 and mbr[511] == 0xAA
+            print(f"MBR_SIG:{{has_mbr_sig}}")
+            
+            # Partition table entries
+            partitions = []
+            for i in range(4):
+                offset = 446 + (i * 16)
+                boot_flag = mbr[offset]
+                part_type = mbr[offset + 4]
+                if part_type != 0:
+                    partitions.append(f"{{i+1}}:type={{hex(part_type)}},boot={{'Y' if boot_flag == 0x80 else 'N'}}")
+            print(f"PARTITIONS:{{';'.join(partitions) if partitions else 'none'}}")
+        
+        # GPT check
+        if len(data) >= 1024:
+            gpt = data[512:1024]
+            has_gpt = gpt[0:8] == b'EFI PART'
+            print(f"GPT:{{has_gpt}}")
+            if has_gpt:
+                # Parse GPT header
+                import struct
+                disk_guid = gpt[56:72]
+                print(f"GPT_GUID:{{disk_guid.hex()}}")
+        
+        # ISO 9660 check (at 32KB offset)
+        if len(data) >= 0x8006:
+            f.seek(0x8001)
+            iso_marker = f.read(5)
+            is_iso = iso_marker == b'CD001'
+            print(f"ISO9660:{{is_iso}}")
+            
+            if is_iso:
+                # Read volume label
+                f.seek(0x8028)
+                vol_label = f.read(32).decode('ascii', errors='ignore').strip()
+                print(f"ISO_LABEL:{{vol_label}}")
+                
+                # El Torito boot catalog
+                f.seek(0x8801)
+                boot_marker = f.read(5)
+                has_boot = boot_marker == b'CD001'
+                f.seek(0x8800)
+                boot_type = f.read(1)[0]
+                print(f"EL_TORITO:{{boot_type == 0 and has_boot}}")
+        
+        print("SUCCESS")
+except Exception as e:
+    print(f"ERROR:{{e}}")
+    sys.exit(1)
+"#, device_path);
+
+    let cmd = format!(
+        "echo '{}' | sudo -S python3 -c '{}'",
+        password,
+        python_script.replace("'", "'\"'\"'")
+    );
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        for line in stdout.lines() {
+            if let Some((key, value)) = line.split_once(':') {
+                match key {
+                    "MBR_SIG" => { boot_info.insert("has_mbr_signature".to_string(), serde_json::json!(value == "True")); },
+                    "GPT" => { boot_info.insert("has_gpt".to_string(), serde_json::json!(value == "True")); },
+                    "GPT_GUID" => { boot_info.insert("gpt_disk_guid".to_string(), serde_json::json!(value)); },
+                    "PARTITIONS" => { boot_info.insert("mbr_partitions".to_string(), serde_json::json!(value)); },
+                    "ISO9660" => { boot_info.insert("is_iso9660".to_string(), serde_json::json!(value == "True")); },
+                    "ISO_LABEL" => { boot_info.insert("iso_volume_label".to_string(), serde_json::json!(value)); },
+                    "EL_TORITO" => { boot_info.insert("has_el_torito_boot".to_string(), serde_json::json!(value == "True")); },
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    serde_json::json!(boot_info)
+}
+
+/// Detect filesystem signatures from raw device
+fn detect_filesystem_signatures(disk_id: &str, password: &str) -> Option<serde_json::Value> {
+    let device_path = format!("/dev/r{}", disk_id);
+    let mut signatures = serde_json::Map::new();
+    
+    let python_script = format!(
+        r#"
+import os
+
+device = "{}"
+try:
+    fd = os.open(device, os.O_RDONLY)
+    with os.fdopen(fd, 'rb') as f:
+        # Read enough data for all signatures
+        data = f.read(131072)  # 128KB
+        
+        # NTFS (offset 3)
+        if len(data) >= 11 and data[3:7] == b'NTFS':
+            print("FS_NTFS:True")
+        
+        # FAT32 (offset 82 or 54)
+        if len(data) >= 90:
+            if data[82:90] == b'FAT32   ' or data[54:62] == b'FAT32   ':
+                print("FS_FAT32:True")
+            elif data[54:59] == b'FAT16':
+                print("FS_FAT16:True")
+            elif data[54:59] == b'FAT12':
+                print("FS_FAT12:True")
+        
+        # exFAT (offset 3)
+        if len(data) >= 11 and data[3:8] == b'EXFAT':
+            print("FS_EXFAT:True")
+        
+        # ext2/3/4 (superblock at 1024)
+        if len(data) >= 1080:
+            ext_magic = data[1024+56:1024+58]
+            if ext_magic == b'\x53\xef':
+                # Check ext version
+                compat = data[1024+92:1024+96]
+                incompat = data[1024+96:1024+100]
+                if incompat[0] & 0x40:  # EXTENTS
+                    print("FS_EXT4:True")
+                elif incompat[0] & 0x04:  # JOURNAL
+                    print("FS_EXT3:True")
+                else:
+                    print("FS_EXT2:True")
+        
+        # HFS+ (offset 1024)
+        if len(data) >= 1026:
+            hfs_magic = data[1024:1026]
+            if hfs_magic == b'H+' or hfs_magic == b'HX':
+                print("FS_HFSPLUS:True")
+        
+        # APFS (look for NXSB magic)
+        if len(data) >= 36 and data[32:36] == b'NXSB':
+            print("FS_APFS:True")
+        
+        # Btrfs (superblock at 64KB)
+        f.seek(65536 + 64)
+        btrfs_magic = f.read(8)
+        if btrfs_magic == b'_BHRfS_M':
+            print("FS_BTRFS:True")
+        
+        # XFS (offset 0)
+        if len(data) >= 4 and data[0:4] == b'XFSB':
+            print("FS_XFS:True")
+        
+        print("SUCCESS")
+except Exception as e:
+    print(f"ERROR:{{e}}")
+"#, device_path);
+
+    let cmd = format!(
+        "echo '{}' | sudo -S python3 -c '{}'",
+        password,
+        python_script.replace("'", "'\"'\"'")
+    );
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut detected = Vec::new();
+        
+        for line in stdout.lines() {
+            if let Some((key, value)) = line.split_once(':') {
+                if value == "True" {
+                    match key {
+                        "FS_NTFS" => detected.push("NTFS"),
+                        "FS_FAT32" => detected.push("FAT32"),
+                        "FS_FAT16" => detected.push("FAT16"),
+                        "FS_FAT12" => detected.push("FAT12"),
+                        "FS_EXFAT" => detected.push("exFAT"),
+                        "FS_EXT4" => detected.push("ext4"),
+                        "FS_EXT3" => detected.push("ext3"),
+                        "FS_EXT2" => detected.push("ext2"),
+                        "FS_HFSPLUS" => detected.push("HFS+"),
+                        "FS_APFS" => detected.push("APFS"),
+                        "FS_BTRFS" => detected.push("Btrfs"),
+                        "FS_XFS" => detected.push("XFS"),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        if !detected.is_empty() {
+            signatures.insert("detected_filesystems".to_string(), serde_json::json!(detected));
+            return Some(serde_json::json!(signatures));
+        }
+    }
+    
+    None
+}
+
+/// Analyze mounted content (files, folders, OS detection)
+fn analyze_mounted_content(mount_point: &str) -> Option<serde_json::Value> {
+    let mut content = serde_json::Map::new();
+    
+    // Count files and folders
+    let count_cmd = format!(
+        "find '{}' -maxdepth 5 2>/dev/null | head -10000 | wc -l",
+        mount_point
+    );
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &count_cmd]).output() {
+        if let Ok(count) = String::from_utf8_lossy(&output.stdout).trim().parse::<u64>() {
+            content.insert("total_items".to_string(), serde_json::json!(count));
+        }
+    }
+    
+    // Get disk usage
+    let du_cmd = format!("du -sh '{}' 2>/dev/null", mount_point);
+    if let Ok(output) = Command::new("sh").args(["-c", &du_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(size) = stdout.split_whitespace().next() {
+            content.insert("used_space".to_string(), serde_json::json!(size));
+        }
+    }
+    
+    // Detect OS installations
+    let mut detected_os = Vec::new();
+    
+    // Check for Windows
+    let windows_paths = [
+        "Windows/System32",
+        "Windows/explorer.exe",
+        "bootmgr",
+        "Boot/BCD",
+    ];
+    for path in &windows_paths {
+        let full_path = format!("{}/{}", mount_point, path);
+        if std::path::Path::new(&full_path).exists() {
+            if !detected_os.contains(&"Windows".to_string()) {
+                detected_os.push("Windows".to_string());
+            }
+            break;
+        }
+    }
+    
+    // Check for Linux
+    let linux_paths = [
+        "boot/vmlinuz",
+        "boot/grub",
+        "etc/os-release",
+        "bin/bash",
+    ];
+    for path in &linux_paths {
+        let full_path = format!("{}/{}", mount_point, path);
+        if std::path::Path::new(&full_path).exists() {
+            if !detected_os.contains(&"Linux".to_string()) {
+                detected_os.push("Linux".to_string());
+            }
+            break;
+        }
+    }
+    
+    // Check for macOS installer
+    let macos_paths = [
+        "Install macOS",
+        ".IABootFiles",
+        "System/Library/CoreServices",
+    ];
+    for path in &macos_paths {
+        let full_path = format!("{}/{}", mount_point, path);
+        let check_cmd = format!("ls -d '{}' 2>/dev/null | head -1", full_path);
+        if let Ok(output) = Command::new("sh").args(["-c", &check_cmd]).output() {
+            if !output.stdout.is_empty() {
+                if !detected_os.contains(&"macOS".to_string()) {
+                    detected_os.push("macOS".to_string());
+                }
+                break;
+            }
+        }
+    }
+    
+    // Check for Linux distributions
+    let os_release_path = format!("{}/etc/os-release", mount_point);
+    if let Ok(contents) = std::fs::read_to_string(&os_release_path) {
+        for line in contents.lines() {
+            if let Some(name) = line.strip_prefix("PRETTY_NAME=") {
+                let distro = name.trim_matches('"');
+                content.insert("linux_distribution".to_string(), serde_json::json!(distro));
+                break;
+            }
+        }
+    }
+    
+    if !detected_os.is_empty() {
+        content.insert("detected_os".to_string(), serde_json::json!(detected_os));
+    }
+    
+    // List top-level directories
+    let ls_cmd = format!("ls -1 '{}' 2>/dev/null | head -30", mount_point);
+    if let Ok(output) = Command::new("sh").args(["-c", &ls_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let dirs: Vec<&str> = stdout.lines().collect();
+        if !dirs.is_empty() {
+            content.insert("top_level_items".to_string(), serde_json::json!(dirs));
+        }
+    }
+    
+    if content.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(content))
+    }
+}
+
+/// Detect special structures (hidden partitions, recovery, etc.)
+fn detect_special_structures(disk_id: &str, password: &str) -> Option<serde_json::Value> {
+    let mut special = serde_json::Map::new();
+    
+    // Check for hidden partitions using diskutil
+    let hidden_cmd = format!(
+        "echo '{}' | sudo -S diskutil list {} 2>/dev/null | grep -i 'EFI\\|Recovery\\|hidden\\|Microsoft Reserved'",
+        password, disk_id
+    );
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &hidden_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.trim().is_empty() {
+            let partitions: Vec<&str> = stdout.lines().map(|l| l.trim()).collect();
+            special.insert("special_partitions".to_string(), serde_json::json!(partitions));
+        }
+    }
+    
+    // Check for Windows recovery
+    let check_windows_re = format!(
+        "ls -la /Volumes/*/Recovery 2>/dev/null | head -1",
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &check_windows_re]).output() {
+        if !output.stdout.is_empty() {
+            special.insert("has_windows_recovery".to_string(), serde_json::json!(true));
+        }
+    }
+    
+    if special.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(special))
+    }
 }
 
 /// Check if a USB disk is bootable (EFI/MBR/Hybrid)
@@ -2249,7 +3435,7 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
     
     let about_metadata = AboutMetadata {
         name: Some("BurnISO to USB".to_string()),
-        version: Some("1.0.0".to_string()),
+        version: Some("1.3.0".to_string()),
         copyright: Some("© 2025 Norbert Jander".to_string()),
         comments: Some(about_comments.to_string()),
         ..Default::default()
@@ -2288,6 +3474,10 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
     let tab_backup = MenuItem::with_id(app_handle, "tab_backup", "USB → ISO", true, Some("CmdOrCtrl+2"))?;
     let tab_diagnose_label = if lang == "en" { "USB Diagnostic" } else { "USB Diagnose" };
     let tab_diagnose = MenuItem::with_id(app_handle, "tab_diagnose", tab_diagnose_label, true, Some("CmdOrCtrl+3"))?;
+    let tab_tools_label = if lang == "en" { "USB Tools" } else { "USB Tools" };
+    let tab_tools = MenuItem::with_id(app_handle, "tab_tools", tab_tools_label, true, Some("CmdOrCtrl+4"))?;
+    let tab_forensic_label = if lang == "en" { "Forensic Analysis" } else { "Forensik-Analyse" };
+    let tab_forensic = MenuItem::with_id(app_handle, "tab_forensic", tab_forensic_label, true, Some("CmdOrCtrl+5"))?;
     let start_burn = MenuItem::with_id(app_handle, "start_burn", start_burn_label, true, Some("CmdOrCtrl+B"))?;
     let start_backup = MenuItem::with_id(app_handle, "start_backup", start_backup_label, true, Some("CmdOrCtrl+Shift+B"))?;
     let start_diagnose = MenuItem::with_id(app_handle, "start_diagnose", start_diagnose_label, true, Some("CmdOrCtrl+D"))?;
@@ -2297,7 +3487,7 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
         app_handle,
         action_menu_label,
         true,
-        &[&tab_burn, &tab_backup, &tab_diagnose, &PredefinedMenuItem::separator(app_handle)?, &start_burn, &start_backup, &start_diagnose, &PredefinedMenuItem::separator(app_handle)?, &cancel_action],
+        &[&tab_burn, &tab_backup, &tab_diagnose, &tab_tools, &tab_forensic, &PredefinedMenuItem::separator(app_handle)?, &start_burn, &start_backup, &start_diagnose, &PredefinedMenuItem::separator(app_handle)?, &cancel_action],
     )?;
     
     // Fenster-Menü
@@ -2367,9 +3557,12 @@ pub fn run() {
             diagnose_speed_test,
             get_smart_data,
             check_smartctl_installed,
+            write_text_file,
             format_disk,
+            repair_disk,
             secure_erase,
             check_bootable,
+            forensic_analysis,
             get_window_state,
             save_window_state,
             set_menu_language
@@ -2404,6 +3597,8 @@ pub fn run() {
                         "tab_burn" => { let _ = window.emit("menu-action", "tab_burn"); }
                         "tab_backup" => { let _ = window.emit("menu-action", "tab_backup"); }
                         "tab_diagnose" => { let _ = window.emit("menu-action", "tab_diagnose"); }
+                        "tab_tools" => { let _ = window.emit("menu-action", "tab_tools"); }
+                        "tab_forensic" => { let _ = window.emit("menu-action", "tab_forensic"); }
                         "start_burn" => { let _ = window.emit("menu-action", "start_burn"); }
                         "start_backup" => { let _ = window.emit("menu-action", "start_backup"); }
                         "start_diagnose" => { let _ = window.emit("menu-action", "start_diagnose"); }
