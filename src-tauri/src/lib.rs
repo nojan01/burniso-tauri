@@ -1407,7 +1407,7 @@ fn get_disk_info(disk_id: String) -> Result<String, String> {
 
 #[tauri::command]
 fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
-    let supported_fs = ["APFS", "Apple_APFS", "HFS+", "Mac OS Extended", "FAT32", "ExFAT", "Apple_HFS"];
+    let supported_fs = ["APFS", "Apple_APFS", "HFS+", "Mac OS Extended", "FAT32", "ExFAT", "Apple_HFS", "MS-DOS", "msdos", "FAT16", "FAT12"];
     let iso_fs = ["ISO 9660", "cd9660", "ISO9660", "ISO", "UDF"];
     
     // Hilfsfunktion um Partition/Disk zu prüfen (macOS-native Erkennung)
@@ -1793,6 +1793,28 @@ async fn format_disk(
         match child.try_wait() {
             Ok(Some(status)) => {
                 if status.success() {
+                    emit_progress(&app, 95, "Mounting volume...", "tools");
+                    
+                    // Wait a moment for the system to recognize the new filesystem
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    
+                    // Mount the newly formatted disk
+                    let _ = Command::new("diskutil")
+                        .args(["mountDisk", &disk_path])
+                        .output();
+                    
+                    // Additional wait and retry mount for FAT32/exFAT/NTFS/ext which sometimes need it
+                    if filesystem == "FAT32" || filesystem == "ExFAT" || filesystem == "NTFS" 
+                        || filesystem == "ext2" || filesystem == "ext3" || filesystem == "ext4" {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        // Try mounting specific partitions
+                        let partition_suffix = if scheme_type == "GPT" { "s2" } else { "s1" };
+                        let partition_path = format!("{}{}", disk_path, partition_suffix);
+                        let _ = Command::new("diskutil")
+                            .args(["mount", &partition_path])
+                            .output();
+                    }
+                    
                     emit_progress(&app, 100, "Format complete!", "tools");
                     return Ok(format!("USB formatted as {} ({})", filesystem, volume_name));
                 } else {
