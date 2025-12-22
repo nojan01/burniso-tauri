@@ -45,7 +45,7 @@
 ### 🛠️ USB Tools
 - **Formatieren** - FAT32, ExFAT, APFS, HFS+ mit GPT oder MBR
 - **First Aid** - Repariert Dateisystem-Fehler auf USB-Sticks
-- **Sicher Löschen** - 5 Sicherheitsstufen (Schnell bis Gutmann 35×)
+- **Sicher Löschen** - 4 Sicherheitsstufen (Schnell bis Gutmann 35×)
 - **Boot-Analyse** - Prüft Bootfähigkeit (MBR, GPT, EFI, El Torito)
 
 ### 🔍 Forensik-Analyse (NEU in 1.3.0)
