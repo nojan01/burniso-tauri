@@ -45,7 +45,10 @@
   - Info ob USB-Stick bootfähig ist
 
 - [x] **USB-Stick Formatieren**
-  - Wählbare Dateisysteme: FAT32, ExFAT, APFS, HFS+
+  - Wählbare Dateisysteme: FAT32, ExFAT, NTFS, APFS, HFS+, ext2, ext3, ext4
+  - NTFS-Formatierung via Paragon NTFS (UFSD_NTFS)
+  - ext2/3/4-Formatierung via Paragon extFS
+  - Verschlüsselung für APFS und HFS+ (FileVault-kompatibel)
   - Partitionsschema: GPT oder MBR
   - Volume-Name anpassbar
 
@@ -93,6 +96,23 @@
 ---
 
 ## ✅ Abgeschlossen
+
+### Version 1.3.1 (20.12.2024)
+- [x] **Erweiterte Forensik-Analyse**
+  - **Paragon NTFS für Windows-Filesysteme:**
+    - Vollständiger Lese-/Schreibzugriff auf NTFS-Partitionen
+    - Automatische Erkennung wenn Paragon NTFS installiert ist
+    - Kommerzielle Lösung (empfohlen für NTFS-Analyse)
+  - **Paragon extFS für Linux-Filesysteme:**
+    - Vollständiger Lese-/Schreibzugriff auf ext2/ext3/ext4-Partitionen
+    - Automatische Erkennung wenn Paragon extFS installiert ist
+    - Kommerzielle Lösung (empfohlen für Linux-Partitionsanalyse)
+  - **Nativ unterstützte Filesysteme:**
+    - NTFS: Paragon NTFS (Lesen/Schreiben) oder Nur-Lesen (nativ macOS)
+    - ext2/3/4: Paragon extFS (Lesen/Schreiben)
+    - exFAT: Nativ macOS (volle Unterstützung)
+    - FAT32: Nativ macOS (volle Unterstützung)
+    - APFS/HFS+: Nativ macOS (volle Unterstützung)
 
 ### Version 1.1.0 (18.12.2024)
 - [x] USB Diagnose Tab

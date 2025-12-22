@@ -504,6 +504,30 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Check if Paragon NTFS and/or extFS drivers are installed
+/// Returns a JSON object with { ntfs: bool, extfs: bool }
+#[tauri::command]
+fn check_paragon_drivers() -> serde_json::Value {
+    // Check for Paragon NTFS driver (UFSD_NTFS)
+    let ntfs_installed = Command::new("diskutil")
+        .args(["listFilesystems"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("UFSD_NTFS"))
+        .unwrap_or(false);
+    
+    // Check for Paragon extFS driver (UFSD_EXTFS)
+    let extfs_installed = Command::new("diskutil")
+        .args(["listFilesystems"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("UFSD_EXTFS"))
+        .unwrap_or(false);
+    
+    serde_json::json!({
+        "ntfs": ntfs_installed,
+        "extfs": extfs_installed
+    })
+}
+
 /// Check if smartmontools is installed
 #[tauri::command]
 fn check_smartctl_installed() -> bool {
@@ -1652,17 +1676,28 @@ async fn format_disk(
     name: String,
     scheme: String,
     password: String,
+    encrypted: Option<bool>,
+    encryption_password: Option<String>,
 ) -> Result<String, String> {
     CANCEL_TOOLS.store(false, Ordering::SeqCst);
     
     let disk_path = format!("/dev/{}", disk_id);
+    let is_encrypted = encrypted.unwrap_or(false);
+    let is_ntfs = filesystem == "NTFS";
+    let is_ext = filesystem == "ext2" || filesystem == "ext3" || filesystem == "ext4";
     
     // Validate filesystem
-    let fs_type = match filesystem.as_str() {
-        "FAT32" => "MS-DOS FAT32",
-        "ExFAT" => "ExFAT",
-        "APFS" => "APFS",
-        "HFS+" => "JHFS+",
+    let fs_type = match (filesystem.as_str(), is_encrypted) {
+        ("FAT32", _) => "MS-DOS FAT32",
+        ("ExFAT", _) => "ExFAT",
+        ("NTFS", _) => "UFSD_NTFS", // Paragon NTFS driver
+        ("ext2", _) => "UFSD_EXTFS", // Paragon extFS driver
+        ("ext3", _) => "UFSD_EXTFS", // Paragon extFS driver
+        ("ext4", _) => "UFSD_EXTFS", // Paragon extFS driver
+        ("APFS", false) => "APFS",
+        ("APFS", true) => "APFS (Encrypted)",
+        ("HFS+", false) => "JHFS+",
+        ("HFS+", true) => "JHFS+ (Encrypted)",
         _ => return Err(format!("Nicht unterstütztes Dateisystem: {}", filesystem)),
     };
     
@@ -1690,11 +1725,46 @@ async fn format_disk(
     // Small delay to allow system to release device
     std::thread::sleep(std::time::Duration::from_millis(500));
     
-    // Use diskutil eraseDisk with sudo
-    let script = format!(
-        r#"diskutil eraseDisk "{}" "{}" {} {}"#,
-        fs_type, volume_name, scheme_type, disk_path
-    );
+    // Build the format command
+    // NTFS requires Paragon NTFS driver and uses eraseVolume with UFSD_NTFS
+    // ext2/3/4 requires Paragon extFS driver and uses eraseVolume with UFSD_EXTFS
+    // Other filesystems use eraseDisk
+    let script = if is_ntfs {
+        // For NTFS with Paragon: 
+        // 1. Create a single partition disk with FAT32 first (simpler than ExFAT)
+        // 2. Reformat the first partition (s1 or s2 depending on scheme) as NTFS
+        // GPT creates disk#s2 as main partition, MBR creates disk#s1
+        let partition_suffix = if scheme_type == "GPT" { "s2" } else { "s1" };
+        format!(
+            r#"diskutil eraseDisk "MS-DOS FAT32" "{}" {} {} && sleep 1 && echo "y" | diskutil eraseVolume UFSD_NTFS "{}" {}{}"#,
+            volume_name, scheme_type, disk_path, volume_name, disk_path, partition_suffix
+        )
+    } else if is_ext {
+        // For ext2/3/4 with Paragon extFS:
+        // 1. Create a single partition disk with FAT32 first
+        // 2. Reformat the first partition as ext2/3/4 using UFSD_EXTFS
+        // GPT creates disk#s2 as main partition, MBR creates disk#s1
+        let partition_suffix = if scheme_type == "GPT" { "s2" } else { "s1" };
+        format!(
+            r#"diskutil eraseDisk "MS-DOS FAT32" "{}" {} {} && sleep 1 && echo "y" | diskutil eraseVolume UFSD_EXTFS "{}" {}{}"#,
+            volume_name, scheme_type, disk_path, volume_name, disk_path, partition_suffix
+        )
+    } else if is_encrypted {
+        let enc_pass = encryption_password.unwrap_or_default();
+        if enc_pass.is_empty() {
+            return Err("Verschlüsselungspasswort erforderlich".to_string());
+        }
+        // For encrypted APFS/HFS+, use diskutil with passphrase
+        format!(
+            r#"diskutil eraseDisk "{}" "{}" {} {} -passphrase "{}""#,
+            fs_type, volume_name, scheme_type, disk_path, enc_pass
+        )
+    } else {
+        format!(
+            r#"diskutil eraseDisk "{}" "{}" {} {}"#,
+            fs_type, volume_name, scheme_type, disk_path
+        )
+    };
     
     // Start the format process
     let mut child = Command::new("sudo")
@@ -1963,6 +2033,26 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     let mut result = serde_json::json!({
         "disk_id": disk_id,
         "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    });
+    
+    // 0. Check for Paragon drivers availability (for filesystem support info)
+    let paragon_ntfs = Command::new("diskutil")
+        .args(["listFilesystems"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("UFSD_NTFS"))
+        .unwrap_or(false);
+    
+    let paragon_extfs = Command::new("diskutil")
+        .args(["listFilesystems"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("UFSD_EXTFS"))
+        .unwrap_or(false);
+    
+    result["paragon_drivers"] = serde_json::json!({
+        "ntfs": paragon_ntfs,
+        "extfs": paragon_extfs,
+        "ntfs_description": if paragon_ntfs { "Paragon NTFS installiert - voller NTFS Lese-/Schreibzugriff" } else { "Paragon NTFS nicht installiert - nur Lesezugriff auf NTFS" },
+        "extfs_description": if paragon_extfs { "Paragon extFS installiert - voller ext2/3/4 Lese-/Schreibzugriff" } else { "Paragon extFS nicht installiert - kein ext2/3/4 Zugriff" }
     });
     
     // 1. Get basic disk info from diskutil
@@ -2645,14 +2735,99 @@ except Exception as e:
     serde_json::json!(boot_info)
 }
 
-/// Detect filesystem signatures from raw device
+/// Detect filesystem signatures from raw device and its partitions
 fn detect_filesystem_signatures(disk_id: &str, password: &str) -> Option<serde_json::Value> {
-    let device_path = format!("/dev/r{}", disk_id);
-    let mut signatures = serde_json::Map::new();
+    let mut all_detected = Vec::new();
+    let escaped_password = password.replace("'", "'\\''");
     
-    let python_script = format!(
-        r#"
+    // Get list of partitions for this disk
+    let list_cmd = format!("diskutil list {} 2>/dev/null", disk_id);
+    let mut partitions = vec![disk_id.to_string()];
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &list_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            // Look for partition identifiers like "disk5s1", "disk5s2", etc.
+            if let Some(part_id) = line.split_whitespace().last() {
+                if part_id.starts_with("disk") && part_id.contains('s') && part_id != disk_id {
+                    partitions.push(part_id.to_string());
+                }
+            }
+        }
+    }
+    
+    // First, try to get filesystem info from diskutil (more reliable for Paragon drivers)
+    for part_id in &partitions {
+        if part_id == disk_id {
+            continue; // Skip whole disk, only check partitions
+        }
+        
+        let info_cmd = format!("diskutil info {} 2>/dev/null", part_id);
+        if let Ok(output) = Command::new("sh").args(["-c", &info_cmd]).output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut personality = String::new();
+            
+            for line in stdout.lines() {
+                if line.contains("File System Personality:") {
+                    if let Some(value) = line.split(':').nth(1) {
+                        personality = value.trim().to_string();
+                    }
+                }
+            }
+            
+            // Map Paragon UFSD personalities to filesystem names
+            let fs_name = if personality.starts_with("UFSD_EXTFS") {
+                // UFSD_EXTFS, UFSD_EXTFS2, UFSD_EXTFS3, UFSD_EXTFS4
+                if personality.ends_with("4") {
+                    Some("ext4")
+                } else if personality.ends_with("3") {
+                    Some("ext3")
+                } else if personality.ends_with("2") {
+                    Some("ext2")
+                } else {
+                    // Just "UFSD_EXTFS" - check superblock for version
+                    None
+                }
+            } else if personality.starts_with("UFSD_NTFS") {
+                Some("NTFS")
+            } else if personality.contains("APFS") {
+                Some("APFS")
+            } else if personality.contains("HFS") || personality.contains("Mac OS Extended") {
+                Some("HFS+")
+            } else if personality.contains("FAT32") || personality.contains("MS-DOS FAT32") {
+                Some("FAT32")
+            } else if personality.contains("FAT16") {
+                Some("FAT16")
+            } else if personality.contains("ExFAT") || personality.contains("exFAT") {
+                Some("exFAT")
+            } else {
+                None
+            };
+            
+            if let Some(fs) = fs_name {
+                let entry = format!("{} ({})", fs, part_id);
+                if !all_detected.contains(&entry) {
+                    all_detected.push(entry);
+                }
+            }
+        }
+    }
+    
+    // Scan each partition for filesystem signatures (fallback for unmounted/unknown filesystems)
+    // Skip partitions already detected via diskutil
+    for part_id in &partitions {
+        // Check if this partition was already detected
+        let already_detected = all_detected.iter().any(|e| e.contains(&format!("({})", part_id)));
+        if already_detected {
+            continue;
+        }
+        
+        let device_path = format!("/dev/r{}", part_id);
+        
+        let python_script = format!(
+            r#"
 import os
+import sys
 
 device = "{}"
 try:
@@ -2660,6 +2835,7 @@ try:
     with os.fdopen(fd, 'rb') as f:
         # Read enough data for all signatures
         data = f.read(131072)  # 128KB
+        print(f"READ_BYTES:{{len(data)}}", file=sys.stderr)
         
         # NTFS (offset 3)
         if len(data) >= 11 and data[3:7] == b'NTFS':
@@ -2678,16 +2854,44 @@ try:
         if len(data) >= 11 and data[3:8] == b'EXFAT':
             print("FS_EXFAT:True")
         
-        # ext2/3/4 (superblock at 1024)
-        if len(data) >= 1080:
-            ext_magic = data[1024+56:1024+58]
+        # ext2/3/4 (superblock at offset 1024, magic at offset 0x38 within superblock = 1024+56 = 1080)
+        if len(data) >= 1082:
+            ext_magic = data[1080:1082]  # Magic at superblock offset 0x38 (56 bytes into superblock)
             if ext_magic == b'\x53\xef':
-                # Check ext version
-                compat = data[1024+92:1024+96]
-                incompat = data[1024+96:1024+100]
-                if incompat[0] & 0x40:  # EXTENTS
+                print("FS_EXT_DETECTED:True", file=sys.stderr)
+                # Check ext version using incompat features at offset 0x60 (96) within superblock
+                # and compat features at offset 0x5C (92)
+                ext_version = 2  # Default to ext2
+                
+                if len(data) >= 1124:
+                    # Read feature flags
+                    compat = int.from_bytes(data[1116:1120], 'little')      # 1024 + 92
+                    incompat = int.from_bytes(data[1120:1124], 'little')    # 1024 + 96
+                    ro_compat = int.from_bytes(data[1124:1128], 'little')   # 1024 + 100
+                    
+                    print(f"EXT_COMPAT:{{compat:08x}} INCOMPAT:{{incompat:08x}} RO_COMPAT:{{ro_compat:08x}}", file=sys.stderr)
+                    
+                    # ext4 detection: check for ext4-specific features
+                    # INCOMPAT_EXTENTS (0x40), INCOMPAT_64BIT (0x80), INCOMPAT_FLEX_BG (0x200)
+                    # INCOMPAT_MMP (0x100), INCOMPAT_INLINE_DATA (0x8000)
+                    ext4_incompat_flags = 0x40 | 0x80 | 0x200 | 0x100 | 0x8000
+                    # RO_COMPAT: HUGE_FILE (0x08), GDT_CSUM (0x10), DIR_NLINK (0x20), EXTRA_ISIZE (0x40)
+                    ext4_ro_compat_flags = 0x08 | 0x10 | 0x20 | 0x40
+                    
+                    if (incompat & ext4_incompat_flags) or (ro_compat & ext4_ro_compat_flags):
+                        ext_version = 4
+                    elif incompat & 0x04:  # INCOMPAT_RECOVER (has journal, so ext3+)
+                        # Check if it has any ext4 ro_compat features
+                        if ro_compat & ext4_ro_compat_flags:
+                            ext_version = 4
+                        else:
+                            ext_version = 3
+                    elif compat & 0x04:  # COMPAT_HAS_JOURNAL
+                        ext_version = 3
+                
+                if ext_version == 4:
                     print("FS_EXT4:True")
-                elif incompat[0] & 0x04:  # JOURNAL
+                elif ext_version == 3:
                     print("FS_EXT3:True")
                 else:
                     print("FS_EXT2:True")
@@ -2698,11 +2902,11 @@ try:
             if hfs_magic == b'H+' or hfs_magic == b'HX':
                 print("FS_HFSPLUS:True")
         
-        # APFS (look for NXSB magic)
+        # APFS (look for NXSB magic at offset 32)
         if len(data) >= 36 and data[32:36] == b'NXSB':
             print("FS_APFS:True")
         
-        # Btrfs (superblock at 64KB)
+        # Btrfs (superblock at 64KB + 64 bytes)
         f.seek(65536 + 64)
         btrfs_magic = f.read(8)
         if btrfs_magic == b'_BHRfS_M':
@@ -2714,45 +2918,60 @@ try:
         
         print("SUCCESS")
 except Exception as e:
-    print(f"ERROR:{{e}}")
+    print(f"ERROR:{{e}}", file=sys.stderr)
 "#, device_path);
 
-    let cmd = format!(
-        "echo '{}' | sudo -S python3 -c '{}'",
-        password,
-        python_script.replace("'", "'\"'\"'")
-    );
-    
-    if let Ok(output) = Command::new("sh").args(["-c", &cmd]).output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut detected = Vec::new();
+        let cmd = format!(
+            "echo '{}' | sudo -S python3 -c '{}'",
+            escaped_password,
+            python_script.replace("'", "'\"'\"'")
+        );
         
-        for line in stdout.lines() {
-            if let Some((key, value)) = line.split_once(':') {
-                if value == "True" {
-                    match key {
-                        "FS_NTFS" => detected.push("NTFS"),
-                        "FS_FAT32" => detected.push("FAT32"),
-                        "FS_FAT16" => detected.push("FAT16"),
-                        "FS_FAT12" => detected.push("FAT12"),
-                        "FS_EXFAT" => detected.push("exFAT"),
-                        "FS_EXT4" => detected.push("ext4"),
-                        "FS_EXT3" => detected.push("ext3"),
-                        "FS_EXT2" => detected.push("ext2"),
-                        "FS_HFSPLUS" => detected.push("HFS+"),
-                        "FS_APFS" => detected.push("APFS"),
-                        "FS_BTRFS" => detected.push("Btrfs"),
-                        "FS_XFS" => detected.push("XFS"),
-                        _ => {}
+        if let Ok(output) = Command::new("sh").args(["-c", &cmd]).output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            
+            // Debug: Log stderr output for filesystem detection
+            if !stderr.is_empty() {
+                eprintln!("[FS Detection {}] stderr: {}", part_id, stderr);
+            }
+            
+            for line in stdout.lines() {
+                if let Some((key, value)) = line.split_once(':') {
+                    if value == "True" {
+                        let fs_name = match key {
+                            "FS_NTFS" => "NTFS",
+                            "FS_FAT32" => "FAT32",
+                            "FS_FAT16" => "FAT16",
+                            "FS_FAT12" => "FAT12",
+                            "FS_EXFAT" => "exFAT",
+                            "FS_EXT4" => "ext4",
+                            "FS_EXT3" => "ext3",
+                            "FS_EXT2" => "ext2",
+                            "FS_HFSPLUS" => "HFS+",
+                            "FS_APFS" => "APFS",
+                            "FS_BTRFS" => "Btrfs",
+                            "FS_XFS" => "XFS",
+                            _ => continue,
+                        };
+                        let entry = if part_id == disk_id {
+                            fs_name.to_string()
+                        } else {
+                            format!("{} ({})", fs_name, part_id)
+                        };
+                        if !all_detected.contains(&entry) {
+                            all_detected.push(entry);
+                        }
                     }
                 }
             }
         }
-        
-        if !detected.is_empty() {
-            signatures.insert("detected_filesystems".to_string(), serde_json::json!(detected));
-            return Some(serde_json::json!(signatures));
-        }
+    }
+    
+    if !all_detected.is_empty() {
+        let mut signatures = serde_json::Map::new();
+        signatures.insert("detected_filesystems".to_string(), serde_json::json!(all_detected));
+        return Some(serde_json::json!(signatures));
     }
     
     None
@@ -2781,6 +3000,20 @@ fn analyze_mounted_content(mount_point: &str) -> Option<serde_json::Value> {
         if let Some(size) = stdout.split_whitespace().next() {
             content.insert("used_space".to_string(), serde_json::json!(size));
         }
+    }
+    
+    // Get file count
+    let file_count_cmd = format!("find '{}' -type f 2>/dev/null | wc -l", mount_point);
+    if let Ok(output) = Command::new("sh").args(["-c", &file_count_cmd]).output() {
+        let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        content.insert("file_count".to_string(), serde_json::json!(count));
+    }
+    
+    // Get directory count
+    let dir_count_cmd = format!("find '{}' -type d 2>/dev/null | wc -l", mount_point);
+    if let Ok(output) = Command::new("sh").args(["-c", &dir_count_cmd]).output() {
+        let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        content.insert("directory_count".to_string(), serde_json::json!(count));
     }
     
     // Detect OS installations
@@ -2839,25 +3072,131 @@ fn analyze_mounted_content(mount_point: &str) -> Option<serde_json::Value> {
         }
     }
     
-    // Check for Linux distributions
+    // Check for Linux distributions and get detailed info
     let os_release_path = format!("{}/etc/os-release", mount_point);
     if let Ok(contents) = std::fs::read_to_string(&os_release_path) {
+        let mut linux_info = serde_json::Map::new();
         for line in contents.lines() {
             if let Some(name) = line.strip_prefix("PRETTY_NAME=") {
                 let distro = name.trim_matches('"');
                 content.insert("linux_distribution".to_string(), serde_json::json!(distro));
-                break;
+                linux_info.insert("pretty_name".to_string(), serde_json::json!(distro));
+            } else if let Some(name) = line.strip_prefix("NAME=") {
+                linux_info.insert("name".to_string(), serde_json::json!(name.trim_matches('"')));
+            } else if let Some(version) = line.strip_prefix("VERSION=") {
+                linux_info.insert("version".to_string(), serde_json::json!(version.trim_matches('"')));
+            } else if let Some(id) = line.strip_prefix("ID=") {
+                linux_info.insert("id".to_string(), serde_json::json!(id.trim_matches('"')));
             }
         }
+        if !linux_info.is_empty() {
+            content.insert("linux_system_info".to_string(), serde_json::json!(linux_info));
+        }
+        
+        // Get home users for Linux
+        let home_path = format!("{}/home", mount_point);
+        if std::path::Path::new(&home_path).exists() {
+            let home_cmd = format!("ls -1 '{}' 2>/dev/null", home_path);
+            if let Ok(output) = Command::new("sh").args(["-c", &home_cmd]).output() {
+                let users: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                if !users.is_empty() {
+                    content.insert("linux_home_users".to_string(), serde_json::json!(users));
+                }
+            }
+        }
+        
+        // Check for installed package count
+        let dpkg_path = format!("{}/var/lib/dpkg/status", mount_point);
+        if std::path::Path::new(&dpkg_path).exists() {
+            let pkg_cmd = format!("grep -c '^Package:' '{}' 2>/dev/null", dpkg_path);
+            if let Ok(output) = Command::new("sh").args(["-c", &pkg_cmd]).output() {
+                let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                content.insert("installed_packages_dpkg".to_string(), serde_json::json!(count));
+            }
+        }
+        
+        // Check for kernel versions
+        let boot_path = format!("{}/boot", mount_point);
+        if std::path::Path::new(&boot_path).exists() {
+            let kernel_cmd = format!("ls '{}' 2>/dev/null | grep -E 'vmlinuz|initrd' | head -5", boot_path);
+            if let Ok(output) = Command::new("sh").args(["-c", &kernel_cmd]).output() {
+                let kernels: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                if !kernels.is_empty() {
+                    content.insert("kernel_files".to_string(), serde_json::json!(kernels));
+                }
+            }
+        }
+    }
+    
+    // Check for Windows system info
+    let win_path = format!("{}/Windows", mount_point);
+    if std::path::Path::new(&win_path).exists() {
+        let mut windows_info = serde_json::Map::new();
+        windows_info.insert("is_windows_system".to_string(), serde_json::json!(true));
+        
+        // Check Windows version hints
+        let sys_apps = format!("{}/Windows/SystemApps", mount_point);
+        if std::path::Path::new(&sys_apps).exists() {
+            windows_info.insert("version_hint".to_string(), serde_json::json!("Windows 10/11"));
+        }
+        
+        // Get Windows user profiles
+        let users_path = format!("{}/Users", mount_point);
+        if std::path::Path::new(&users_path).exists() {
+            let users_cmd = format!("ls -1 '{}' 2>/dev/null | grep -v -E '^(Public|Default|All Users|Default User|desktop.ini)$'", users_path);
+            if let Ok(output) = Command::new("sh").args(["-c", &users_cmd]).output() {
+                let users: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                if !users.is_empty() {
+                    windows_info.insert("user_profiles".to_string(), serde_json::json!(users));
+                }
+            }
+        }
+        
+        // Get installed programs
+        let prog_path = format!("{}/Program Files", mount_point);
+        if std::path::Path::new(&prog_path).exists() {
+            let prog_cmd = format!("ls -1 '{}' 2>/dev/null | head -20", prog_path);
+            if let Ok(output) = Command::new("sh").args(["-c", &prog_cmd]).output() {
+                let progs: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                if !progs.is_empty() {
+                    windows_info.insert("installed_programs".to_string(), serde_json::json!(progs));
+                }
+            }
+        }
+        
+        content.insert("windows_system_info".to_string(), serde_json::json!(windows_info));
     }
     
     if !detected_os.is_empty() {
         content.insert("detected_os".to_string(), serde_json::json!(detected_os));
     }
     
-    // List top-level directories
-    let ls_cmd = format!("ls -1 '{}' 2>/dev/null | head -30", mount_point);
+    // List top-level directories with details
+    let ls_cmd = format!("ls -la '{}' 2>/dev/null | head -35", mount_point);
     if let Ok(output) = Command::new("sh").args(["-c", &ls_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        content.insert("root_listing".to_string(), serde_json::json!(stdout.trim()));
+    }
+    
+    // Also get simple list for backwards compatibility
+    let ls_simple_cmd = format!("ls -1 '{}' 2>/dev/null | head -30", mount_point);
+    if let Ok(output) = Command::new("sh").args(["-c", &ls_simple_cmd]).output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let dirs: Vec<&str> = stdout.lines().collect();
         if !dirs.is_empty() {
@@ -2865,6 +3204,97 @@ fn analyze_mounted_content(mount_point: &str) -> Option<serde_json::Value> {
         }
     }
     
+    // Get largest files with human-readable sizes
+    let large_cmd = format!(
+        "find '{}' -type f -exec stat -f '%z %N' {{}} \\; 2>/dev/null | sort -rn | head -10",
+        mount_point
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &large_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let files: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.splitn(2, ' ').collect();
+                if parts.len() == 2 {
+                    let size_bytes: u64 = parts[0].parse().unwrap_or(0);
+                    let size_human = if size_bytes >= 1073741824 {
+                        format!("{:.2} GB", size_bytes as f64 / 1073741824.0)
+                    } else if size_bytes >= 1048576 {
+                        format!("{:.2} MB", size_bytes as f64 / 1048576.0)
+                    } else if size_bytes >= 1024 {
+                        format!("{:.2} KB", size_bytes as f64 / 1024.0)
+                    } else {
+                        format!("{} B", size_bytes)
+                    };
+                    Some(serde_json::json!({
+                        "size_bytes": size_bytes,
+                        "size_human": size_human,
+                        "path": parts[1].replace(mount_point, "")
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !files.is_empty() {
+            content.insert("largest_files".to_string(), serde_json::json!(files));
+        }
+    }
+    
+    // Get hidden files
+    let hidden_cmd = format!("find '{}' -maxdepth 2 -name '.*' -type f 2>/dev/null | head -20", mount_point);
+    if let Ok(output) = Command::new("sh").args(["-c", &hidden_cmd]).output() {
+        let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| l.replace(mount_point, "").to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !files.is_empty() {
+            content.insert("hidden_files".to_string(), serde_json::json!(files));
+        }
+    }
+    
+    // Get file type distribution
+    let types_cmd = format!(
+        "find '{}' -type f -name '*.*' 2>/dev/null | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -15",
+        mount_point
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &types_cmd]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let types: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let parts: Vec<&str> = line.splitn(2, ' ').collect();
+                if parts.len() == 2 {
+                    Some(serde_json::json!({
+                        "count": parts[0].trim(),
+                        "extension": parts[1].trim()
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !types.is_empty() {
+            content.insert("file_type_distribution".to_string(), serde_json::json!(types));
+        }
+    }
+    
+    // Get recently modified files (last 7 days)
+    let recent_cmd = format!(
+        "find '{}' -type f -mtime -7 2>/dev/null | head -15",
+        mount_point
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &recent_cmd]).output() {
+        let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| l.replace(mount_point, "").to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !files.is_empty() {
+            content.insert("recently_modified".to_string(), serde_json::json!(files));
+        }
+    }
+
     if content.is_empty() {
         None
     } else {
@@ -3557,6 +3987,7 @@ pub fn run() {
             diagnose_speed_test,
             get_smart_data,
             check_smartctl_installed,
+            check_paragon_drivers,
             write_text_file,
             format_disk,
             repair_disk,

@@ -372,9 +372,22 @@
             <select id="format-filesystem">
               <option value="FAT32">FAT32</option>
               <option value="ExFAT">ExFAT</option>
+              <option value="NTFS" class="paragon-ntfs-option" disabled>NTFS (Paragon)</option>
+              <option value="ext2" class="paragon-extfs-option" disabled>ext2 (Paragon)</option>
+              <option value="ext3" class="paragon-extfs-option" disabled>ext3 (Paragon)</option>
+              <option value="ext4" class="paragon-extfs-option" disabled>ext4 (Paragon)</option>
               <option value="APFS">APFS</option>
               <option value="HFS+">HFS+</option>
             </select>
+          </div>
+          <div class="option-row" id="encryption-row">
+            <label data-i18n="tools.encryption">Verschlüsselung:</label>
+            <input type="checkbox" id="format-encrypted" />
+            <span class="encryption-hint" data-i18n="tools.encryptionHint">(nur APFS/HFS+)</span>
+          </div>
+          <div class="option-row" id="encryption-password-row" style="display: none;">
+            <label data-i18n="tools.encryptionPassword">Passwort:</label>
+            <input type="password" id="format-encryption-password" placeholder="Verschlüsselungspasswort" />
           </div>
           <div class="option-row">
             <label data-i18n="tools.volumeName">Name:</label>

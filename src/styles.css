@@ -1171,6 +1171,7 @@ body {
 }
 
 .format-options input[type="text"],
+.format-options input[type="password"],
 .format-options select {
   padding: 8px 10px;
   border: 1px solid var(--border-color);
@@ -1178,6 +1179,23 @@ body {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   font-size: 13px;
+}
+
+.format-options input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.encryption-hint {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-left: 4px;
+}
+
+#encryption-password-row input {
+  flex: 1;
 }
 
 /* Erase Options - compact radio buttons */

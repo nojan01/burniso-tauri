@@ -237,9 +237,12 @@
       <ul>
         <li><strong>FAT32:</strong> Universell kompatibel (max. 4 GB Dateigröße)</li>
         <li><strong>ExFAT:</strong> Für große Dateien, Windows/Mac kompatibel</li>
-        <li><strong>APFS:</strong> Apple File System (nur macOS)</li>
-        <li><strong>HFS+ (Mac OS Extended):</strong> Klassisches Mac-Format</li>
+        <li><strong>NTFS:</strong> Windows-Standard (erfordert <a href="https://www.paragon-software.com/de/home/ntfs-mac/">Paragon NTFS</a>)</li>
+        <li><strong>ext2/ext3/ext4:</strong> Linux-Dateisysteme (erfordert <a href="https://www.paragon-software.com/de/home/extfs-mac/">Paragon extFS</a>)</li>
+        <li><strong>APFS:</strong> Apple File System (nur macOS) - mit Verschlüsselung möglich</li>
+        <li><strong>HFS+ (Mac OS Extended):</strong> Klassisches Mac-Format - mit Verschlüsselung möglich</li>
       </ul>
+      <p><strong>Verschlüsselung:</strong> Für APFS und HFS+ kann die Verschlüsselung aktiviert werden. Das Passwort wird beim Einbinden des Volumes benötigt.</p>
       <p>Partitionsschema: GUID (GPT) oder MBR wählbar.</p>
       
       <h3>� First Aid (Reparieren)</h3>
@@ -257,14 +260,13 @@
       <table>
         <tr><th>Stufe</th><th>Beschreibung</th><th>Durchläufe</th></tr>
         <tr><td>0 - Schnell</td><td>Einmal mit Nullen überschreiben</td><td>1×</td></tr>
-        <tr><td>1 - Sicher</td><td>Einmal mit Zufallsdaten überschreiben</td><td>1×</td></tr>
-        <tr><td>2 - DoD 5220.22-M</td><td>US-Militärstandard</td><td>7×</td></tr>
+        <tr><td>1 - Zufallsdaten</td><td>Einmal mit Zufallsdaten überschreiben</td><td>1×</td></tr>
         <tr><td>3 - Gutmann</td><td>Maximale Sicherheit (nicht für Flash)</td><td>35×</td></tr>
         <tr><td>4 - DoE</td><td>Department of Energy Standard</td><td>3×</td></tr>
       </table>
       
       <div class="warning">
-        <strong>⚠️ Warnung:</strong> Bei Stufe 2-4 kann der Löschvorgang mehrere Stunden dauern!
+        <strong>⚠️ Warnung:</strong> Bei Stufe 3-4 kann der Löschvorgang mehrere Stunden dauern!
       </div>
       
       <h3>🔍 Boot-Analyse</h3>
@@ -403,9 +405,12 @@
       <ul>
         <li><strong>FAT32:</strong> Universal compatibility (max. 4 GB file size)</li>
         <li><strong>ExFAT:</strong> For large files, Windows/Mac compatible</li>
-        <li><strong>APFS:</strong> Apple File System (macOS only)</li>
-        <li><strong>HFS+ (Mac OS Extended):</strong> Classic Mac format</li>
+        <li><strong>NTFS:</strong> Windows standard (requires <a href="https://www.paragon-software.com/home/ntfs-mac/">Paragon NTFS</a>)</li>
+        <li><strong>ext2/ext3/ext4:</strong> Linux file systems (requires <a href="https://www.paragon-software.com/home/extfs-mac/">Paragon extFS</a>)</li>
+        <li><strong>APFS:</strong> Apple File System (macOS only) - encryption available</li>
+        <li><strong>HFS+ (Mac OS Extended):</strong> Classic Mac format - encryption available</li>
       </ul>
+      <p><strong>Encryption:</strong> For APFS and HFS+, encryption can be enabled. The password is required when mounting the volume.</p>
       <p>Partition scheme: GUID (GPT) or MBR selectable.</p>
       
       <h3>� First Aid (Repair)</h3>

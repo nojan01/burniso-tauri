@@ -43,7 +43,9 @@
 > 💡 Für erweiterte S.M.A.R.T.-Daten: `brew install smartmontools`
 
 ### 🛠️ USB Tools
-- **Formatieren** - FAT32, ExFAT, APFS, HFS+ mit GPT oder MBR
+- **Formatieren** - FAT32, ExFAT, NTFS, ext2/3/4, APFS, HFS+ mit GPT oder MBR (Verschlüsselung für APFS/HFS+)
+- **NTFS** - Erfordert [Paragon NTFS](https://www.paragon-software.com/de/home/ntfs-mac/)
+- **ext2/3/4** - Erfordert [Paragon extFS](https://www.paragon-software.com/de/home/extfs-mac/)
 - **First Aid** - Repariert Dateisystem-Fehler auf USB-Sticks
 - **Sicher Löschen** - 4 Sicherheitsstufen (Schnell bis Gutmann 35×)
 - **Boot-Analyse** - Prüft Bootfähigkeit (MBR, GPT, EFI, El Torito)
@@ -53,6 +55,7 @@
 - **Partitionen** - Layout, Dateisysteme, Größen
 - **Boot-Strukturen** - MBR, GPT, EFI-Partition
 - **Hash-Werte** - MD5, SHA-256 der ersten Sektoren
+- **Paragon-Treiber** - Zeigt an ob NTFS und extFS Treiber verfügbar sind
 - **Export** - JSON (Zwischenablage) oder HTML-Report
 
 ### 🌍 Mehrsprachig

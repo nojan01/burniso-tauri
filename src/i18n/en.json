@@ -202,6 +202,11 @@
     "refresh": "Refresh",
     "formatTitle": "Format",
     "filesystem": "Filesystem:",
+    "encryption": "Encryption:",
+    "encryptionHint": "(APFS/HFS+ only)",
+    "encryptionPassword": "Password:",
+    "encryptionPasswordPlaceholder": "Encryption password",
+    "encryptionPasswordTooShort": "Encryption password must be at least 4 characters",
     "volumeName": "Name:",
     "partitionScheme": "Scheme:",
     "formatButton": "Format",
@@ -311,6 +316,11 @@
     "forensicSmart": "SMART Data",
     "forensicChecksums": "MBR Checksums",
     "forensicCopyReport": "📋 Copy Report",
-    "forensicReportCopied": "Report copied to clipboard!"
+    "forensicReportCopied": "Report copied to clipboard!",
+    "forensicParagonDrivers": "Paragon Drivers",
+    "paragonNtfsInstalled": "Paragon NTFS installed - full NTFS access",
+    "paragonNtfsNotInstalled": "Paragon NTFS not installed",
+    "paragonExtfsInstalled": "Paragon extFS installed - full ext2/3/4 access",
+    "paragonExtfsNotInstalled": "Paragon extFS not installed"
   }
 }

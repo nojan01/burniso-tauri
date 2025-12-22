@@ -326,6 +326,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const formatFilesystem = document.getElementById('format-filesystem');
   const formatName = document.getElementById('format-name');
   const formatScheme = document.getElementById('format-scheme');
+  const formatEncrypted = document.getElementById('format-encrypted');
+  const formatEncryptionPassword = document.getElementById('format-encryption-password');
+  const encryptionRow = document.getElementById('encryption-row');
+  const encryptionPasswordRow = document.getElementById('encryption-password-row');
   const formatBtn = document.getElementById('format-btn');
   const repairBtn = document.getElementById('repair-btn');
   const eraseLevelInputs = document.querySelectorAll('input[name="erase-level"]');
@@ -421,6 +425,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!toolsTabLoaded) {
           toolsTabLoaded = true;
           loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
+          // Check for Paragon drivers and enable/disable filesystem options
+          await checkParagonDrivers();
         } else {
           loadDisksSilent(toolsDiskSelect, toolsDiskInfo);
         }
@@ -1349,10 +1355,76 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // ========== Paragon Driver Check ==========
+  
+  // Check for Paragon NTFS and extFS drivers and enable/disable filesystem options
+  async function checkParagonDrivers() {
+    try {
+      const drivers = await invoke('check_paragon_drivers');
+      console.log('Paragon drivers:', drivers);
+      
+      // Enable/disable NTFS option based on Paragon NTFS
+      const ntfsOption = formatFilesystem.querySelector('option[value="NTFS"]');
+      if (ntfsOption) {
+        ntfsOption.disabled = !drivers.ntfs;
+        ntfsOption.textContent = drivers.ntfs ? 'NTFS (Paragon)' : 'NTFS (Paragon nicht installiert)';
+      }
+      
+      // Enable/disable ext2/3/4 options based on Paragon extFS
+      const extOptions = formatFilesystem.querySelectorAll('.paragon-extfs-option');
+      extOptions.forEach(opt => {
+        opt.disabled = !drivers.extfs;
+        if (!drivers.extfs) {
+          opt.textContent = opt.value + ' (Paragon nicht installiert)';
+        } else {
+          opt.textContent = opt.value + ' (Paragon)';
+        }
+      });
+      
+      // Log driver status
+      if (drivers.ntfs) {
+        logTools('✓ Paragon NTFS erkannt - NTFS-Formatierung verfügbar', 'success');
+      } else {
+        logTools('ℹ️ Paragon NTFS nicht installiert - NTFS nicht verfügbar', 'info');
+      }
+      
+      if (drivers.extfs) {
+        logTools('✓ Paragon extFS erkannt - ext2/3/4-Formatierung verfügbar', 'success');
+      } else {
+        logTools('ℹ️ Paragon extFS nicht installiert - ext2/3/4 nicht verfügbar', 'info');
+      }
+      
+    } catch (err) {
+      console.error('Error checking Paragon drivers:', err);
+    }
+  }
+
   // ========== Tools Tab Event Handlers ==========
   
   refreshToolsDisks.addEventListener('click', function() {
     loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
+  });
+
+  // Toggle encryption options based on filesystem selection
+  function updateEncryptionVisibility() {
+    const fs = formatFilesystem.value;
+    const supportsEncryption = fs === 'APFS' || fs === 'HFS+';
+    encryptionRow.style.display = supportsEncryption ? 'flex' : 'none';
+    if (!supportsEncryption) {
+      formatEncrypted.checked = false;
+      encryptionPasswordRow.style.display = 'none';
+    }
+  }
+  
+  formatFilesystem.addEventListener('change', updateEncryptionVisibility);
+  updateEncryptionVisibility(); // Initial state
+  
+  // Show/hide encryption password field
+  formatEncrypted.addEventListener('change', function() {
+    encryptionPasswordRow.style.display = formatEncrypted.checked ? 'flex' : 'none';
+    if (!formatEncrypted.checked) {
+      formatEncryptionPassword.value = '';
+    }
   });
 
   toolsDiskSelect.addEventListener('change', async function() {
@@ -1380,11 +1452,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     const filesystem = formatFilesystem.value;
     const name = formatName.value || 'USB_STICK';
     const scheme = formatScheme.value;
+    const encrypted = formatEncrypted.checked;
+    const encryptionPassword = formatEncryptionPassword.value;
+    
+    // Validate encryption password if encrypted
+    if (encrypted && encryptionPassword.length < 4) {
+      logTools(t('tools.encryptionPasswordTooShort') || 'Verschlüsselungspasswort muss mindestens 4 Zeichen haben', 'error');
+      return;
+    }
     
     // Confirmation dialog
+    const fsLabel = encrypted ? filesystem + ' (verschlüsselt)' : filesystem;
     const confirmed = await requestConfirm(
       '⚠️ ' + t('tools.formatWarning'),
-      t('tools.formatConfirmMsg').replace('{name}', selectedToolsDisk.name).replace('{fs}', filesystem),
+      t('tools.formatConfirmMsg').replace('{name}', selectedToolsDisk.name).replace('{fs}', fsLabel),
       t('tools.formatConfirmYes'),
       t('dialogs.cancel')
     );
@@ -1416,7 +1497,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     toolsPhase.textContent = t('tools.formatFormatting');
     toolsPhase.className = 'phase-text';
     
-    logTools(t('tools.formatStarting').replace('{fs}', filesystem), 'info');
+    logTools(t('tools.formatStarting').replace('{fs}', fsLabel), 'info');
     
     try {
       const result = await invoke('format_disk', {
@@ -1424,13 +1505,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         filesystem: filesystem,
         name: name,
         scheme: scheme,
-        password: password
+        password: password,
+        encrypted: encrypted,
+        encryptionPassword: encrypted ? encryptionPassword : null
       });
       logTools(result, 'success');
       toolsProgressFill.style.width = '100%';
       toolsProgressText.textContent = '100%';
       toolsPhase.textContent = t('tools.formatComplete');
       toolsPhase.className = 'phase-text success';
+      
+      // Clear encryption password from memory
+      formatEncryptionPassword.value = '';
       
       sendNotification(t('notifications.formatComplete'), t('notifications.formatSuccess'));
       loadDisks(toolsDiskSelect, toolsDiskInfo, logTools);
@@ -1710,6 +1796,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       html += '<div class="forensic-timestamp">' + (t('tools.forensicTimestamp') || 'Zeitstempel') + ': ' + result.timestamp + '</div>';
       html += '</div>';
       
+      // Paragon Drivers Section (if available)
+      if (result.paragon_drivers) {
+        html += '<div class="forensic-section">';
+        html += '<h5>🔧 ' + (t('tools.forensicParagonDrivers') || 'Paragon-Treiber') + '</h5>';
+        html += '<div class="forensic-grid">';
+        html += '<div class="forensic-item"><span class="forensic-label">NTFS:</span> <span class="forensic-value ' + (result.paragon_drivers.ntfs ? 'success' : 'warning') + '">' + (result.paragon_drivers.ntfs ? '✓ Installiert' : '✗ Nicht installiert') + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">extFS (ext2/3/4):</span> <span class="forensic-value ' + (result.paragon_drivers.extfs ? 'success' : 'warning') + '">' + (result.paragon_drivers.extfs ? '✓ Installiert' : '✗ Nicht installiert') + '</span></div>';
+        html += '</div></div>';
+      }
+      
       // Device Info Section
       html += '<div class="forensic-section">';
       html += '<h5>📱 ' + (t('tools.forensicDeviceInfo') || 'Geräteinformationen') + '</h5>';
@@ -1763,10 +1859,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         const hasMbr = result.boot_info.has_mbr_signature || result.boot_info.has_mbr;
         const hasGpt = result.boot_info.has_gpt;
         const hasEfi = result.mbr_analysis?.partition_entries?.some(p => p.type_hex === 'EF') || result.boot_info.has_efi;
-        const isBootable = hasMbr || hasGpt || result.boot_info.is_iso9660;
+        
+        // Check if this is a GPT Protective MBR (type 0xEE) - this is NOT bootable as Legacy BIOS
+        const mbrPartitions = result.boot_info.mbr_partitions || '';
+        const isGptProtectiveMbr = mbrPartitions.includes('type=0xee') || mbrPartitions.includes('type=0xEE');
+        
+        // Real bootable MBR has actual bootable partitions, not just GPT protective
+        const hasRealBootableMbr = hasMbr && !isGptProtectiveMbr && !hasGpt;
+        const isBootable = hasRealBootableMbr || (hasGpt && hasEfi) || result.boot_info.is_iso9660;
         
         html += '<div class="forensic-item"><span class="forensic-label">MBR-Signatur:</span> <span class="forensic-value">' + (hasMbr ? '✓ (55AA)' : '✗') + '</span></div>';
         html += '<div class="forensic-item"><span class="forensic-label">GPT:</span> <span class="forensic-value">' + (hasGpt ? '✓ (EFI PART)' : '✗') + '</span></div>';
+        if (isGptProtectiveMbr) {
+          html += '<div class="forensic-item"><span class="forensic-label">GPT Protective MBR:</span> <span class="forensic-value">✓ (type 0xEE)</span></div>';
+        }
         html += '<div class="forensic-item"><span class="forensic-label">EFI-Partition:</span> <span class="forensic-value">' + (hasEfi ? '✓' : '✗') + '</span></div>';
         
         // Determine boot type
@@ -1776,13 +1882,15 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (result.boot_info.has_el_torito_boot) bootType += ' + El Torito';
         } else if (hasGpt && hasEfi) {
           bootType = 'UEFI (GPT)';
-        } else if (hasMbr && hasEfi) {
+        } else if (hasRealBootableMbr && hasEfi) {
           bootType = 'UEFI (MBR)';
-        } else if (hasMbr) {
+        } else if (hasRealBootableMbr) {
           bootType = 'Legacy BIOS (MBR)';
+        } else if (hasGpt && !hasEfi) {
+          bootType = 'GPT (keine EFI-Partition)';
         }
         
-        html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicBootable') || 'Bootfähig') + ':</span> <span class="forensic-value">' + (isBootable ? '✓ ' + bootType : '✗') + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicBootable') || 'Bootfähig') + ':</span> <span class="forensic-value">' + (isBootable ? '✓ ' + bootType : '✗ ' + (bootType || 'Nicht bootfähig')) + '</span></div>';
         
         if (result.boot_info.is_iso9660) {
           html += '<div class="forensic-item"><span class="forensic-label">ISO 9660:</span> <span class="forensic-value">✓</span></div>';
@@ -1804,17 +1912,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       
       // Filesystem Signatures Section
-      if (result.filesystem_signatures && result.filesystem_signatures.length > 0) {
+      const fsSignatures = result.filesystem_signatures?.detected_filesystems || result.filesystem_signatures;
+      if (fsSignatures && (Array.isArray(fsSignatures) ? fsSignatures.length > 0 : true)) {
         html += '<div class="forensic-section">';
         html += '<h5>📂 ' + (t('tools.forensicFilesystems') || 'Erkannte Dateisysteme') + '</h5>';
         html += '<div class="forensic-filesystems">';
-        result.filesystem_signatures.forEach(fs => {
-          html += '<div class="forensic-fs-item">';
-          html += '<span class="fs-name">' + fs.filesystem + '</span>';
-          html += ' @ Offset ' + fs.offset;
-          if (fs.label) html += ' - Label: "' + fs.label + '"';
-          html += '</div>';
-        });
+        
+        if (Array.isArray(fsSignatures)) {
+          // New format: array of strings like "ext4 (disk6s2)"
+          fsSignatures.forEach(fs => {
+            if (typeof fs === 'string') {
+              html += '<div class="forensic-fs-item">';
+              html += '<span class="fs-name">' + fs + '</span>';
+              html += '</div>';
+            } else if (typeof fs === 'object') {
+              // Old format with filesystem, offset, label
+              html += '<div class="forensic-fs-item">';
+              html += '<span class="fs-name">' + fs.filesystem + '</span>';
+              if (fs.offset) html += ' @ Offset ' + fs.offset;
+              if (fs.label) html += ' - Label: "' + fs.label + '"';
+              html += '</div>';
+            }
+          });
+        }
         html += '</div></div>';
       }
       
@@ -2105,6 +2225,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     .filelist { margin-top: 5px; }
     .file-item { font-size: 13px; padding: 2px 0; }
     .type-badge { display: inline-block; padding: 2px 8px; background: #e0e0e0; border-radius: 10px; margin: 2px; font-size: 12px; }
+    .fs-badge { display: inline-block; padding: 4px 12px; background: #e8f5e9; color: #2e7d32; border-radius: 15px; margin: 3px; font-size: 13px; }
+    .driver-available { color: #4caf50; }
+    .driver-unavailable { color: #f44336; }
     .full-width { grid-column: 1 / -1; }
     @media print { body { background: white; } .report { box-shadow: none; } }
   </style>
@@ -2136,13 +2259,65 @@ document.addEventListener('DOMContentLoaded', async () => {
       html += `</div></div>`;
     }
     
+    // Paragon Drivers Status
+    if (result.paragon_drivers) {
+      html += `<div class="section"><h2>🔧 Paragon Treiber</h2><div class="grid">`;
+      const ntfsStatus = result.paragon_drivers.ntfs;
+      const extfsStatus = result.paragon_drivers.extfs;
+      html += `<div class="item"><span class="label">NTFS for Mac:</span> <span class="value ${ntfsStatus ? 'driver-available' : 'driver-unavailable'}">${ntfsStatus ? '✓ Installiert' : '✗ Nicht installiert'}</span></div>`;
+      html += `<div class="item"><span class="label">extFS for Mac:</span> <span class="value ${extfsStatus ? 'driver-available' : 'driver-unavailable'}">${extfsStatus ? '✓ Installiert' : '✗ Nicht installiert'}</span></div>`;
+      html += `</div></div>`;
+    }
+    
+    // Partition Layout
+    if (result.partition_layout && result.partition_layout.partitions && result.partition_layout.partitions.length > 0) {
+      html += `<div class="section"><h2>💾 Partitionslayout</h2>`;
+      html += `<div class="grid">`;
+      if (result.partition_layout.scheme) {
+        html += `<div class="item"><span class="label">Schema:</span> <span class="value">${result.partition_layout.scheme}</span></div>`;
+      }
+      html += `</div>`;
+      result.partition_layout.partitions.forEach(p => {
+        html += `<div class="partition"><strong>${p.identifier}</strong> - ${p.type || 'Unbekannt'} ${p.name ? '"' + p.name + '"' : ''} ${p.size ? '(' + p.size + ')' : ''}</div>`;
+      });
+      html += `</div>`;
+    }
+    
+    // Filesystem Signatures
+    if (result.filesystem_signatures) {
+      html += `<div class="section"><h2>📂 Erkannte Dateisysteme</h2>`;
+      const filesystems = result.filesystem_signatures.detected_filesystems || [];
+      if (filesystems.length > 0) {
+        filesystems.forEach(fs => {
+          const fsName = typeof fs === 'string' ? fs : (fs.filesystem || 'Unbekannt');
+          html += `<span class="fs-badge">${fsName}</span>`;
+        });
+      } else {
+        html += `<p>Keine erkannten Dateisysteme</p>`;
+      }
+      html += `</div>`;
+    }
+    
     // Boot Info
     if (result.boot_info) {
       const hasMbr = result.boot_info.has_mbr_signature || result.boot_info.has_mbr;
       const hasGpt = result.boot_info.has_gpt;
+      const gptGuid = result.boot_info.gpt_disk_guid;
       html += `<div class="section"><h2>🚀 Boot-Strukturen</h2><div class="grid">`;
       html += `<div class="item"><span class="label">MBR-Signatur:</span> <span class="value">${hasMbr ? '✓ (55AA)' : '✗'}</span></div>`;
       html += `<div class="item"><span class="label">GPT:</span> <span class="value">${hasGpt ? '✓ (EFI PART)' : '✗'}</span></div>`;
+      if (gptGuid) {
+        html += `<div class="item full-width"><span class="label">GPT Disk GUID:</span> <span class="value mono">${gptGuid}</span></div>`;
+      }
+      if (result.boot_info.is_iso9660) {
+        html += `<div class="item"><span class="label">ISO 9660:</span> <span class="value">✓</span></div>`;
+      }
+      if (result.boot_info.iso_volume_label) {
+        html += `<div class="item"><span class="label">ISO Label:</span> <span class="value">${result.boot_info.iso_volume_label}</span></div>`;
+      }
+      if (result.boot_info.has_el_torito_boot) {
+        html += `<div class="item"><span class="label">El Torito Boot:</span> <span class="value">✓</span></div>`;
+      }
       html += `</div></div>`;
     }
     
@@ -2154,8 +2329,36 @@ document.addEventListener('DOMContentLoaded', async () => {
       html += `</div>`;
       if (result.mbr_analysis.partition_entries && result.mbr_analysis.partition_entries.length > 0) {
         result.mbr_analysis.partition_entries.forEach(p => {
-          html += `<div class="partition"><strong>Partition ${p.number}</strong> [${p.type_hex}] ${p.type_name} ${p.bootable ? '🚀 Boot' : ''}</div>`;
+          const isProtectiveMbr = p.type_hex === '0xEE';
+          const bootLabel = isProtectiveMbr ? '' : (p.bootable ? '🚀 Boot' : '');
+          html += `<div class="partition"><strong>Partition ${p.number}</strong> [${p.type_hex}] ${p.type_name} ${bootLabel}</div>`;
         });
+      }
+      html += `</div>`;
+    }
+    
+    // Mounted Content Analysis
+    if (result.mounted_content) {
+      html += `<div class="section"><h2>📁 Gemounteter Inhalt</h2><div class="grid">`;
+      if (result.mounted_content.total_items) {
+        html += `<div class="item"><span class="label">Einträge gesamt:</span> <span class="value">${result.mounted_content.total_items}</span></div>`;
+      }
+      if (result.mounted_content.file_count) {
+        html += `<div class="item"><span class="label">Dateien:</span> <span class="value">${result.mounted_content.file_count}</span></div>`;
+      }
+      if (result.mounted_content.used_space) {
+        html += `<div class="item"><span class="label">Belegter Speicher:</span> <span class="value">${result.mounted_content.used_space}</span></div>`;
+      }
+      html += `</div>`;
+      
+      // OS Detection
+      if (result.mounted_content.os_detection) {
+        const os = result.mounted_content.os_detection;
+        html += `<div style="margin-top: 10px;"><strong>Erkanntes Betriebssystem:</strong><br/>`;
+        if (os.detected_os) html += `<span class="type-badge">${os.detected_os}</span>`;
+        if (os.version) html += ` Version: ${os.version}`;
+        if (os.indicators) html += `<br/><small>Indikatoren: ${os.indicators.join(', ')}</small>`;
+        html += `</div>`;
       }
       html += `</div>`;
     }
