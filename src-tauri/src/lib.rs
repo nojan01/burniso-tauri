@@ -4101,7 +4101,7 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
     
     let about_metadata = AboutMetadata {
         name: Some("BurnISO to USB".to_string()),
-        version: Some("1.3.0".to_string()),
+        version: Some("1.3.1".to_string()),
         copyright: Some("© 2025 Norbert Jander".to_string()),
         comments: Some(about_comments.to_string()),
         ..Default::default()
