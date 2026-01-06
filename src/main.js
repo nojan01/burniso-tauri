@@ -1274,7 +1274,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       
       // Display results
-      if (result.success) {
+      // Check if test was cancelled (message contains "abgebrochen" or "cancelled")
+      const wasCancelled = result.message && 
+        (result.message.toLowerCase().includes('abgebrochen') || 
+         result.message.toLowerCase().includes('cancelled'));
+      
+      if (wasCancelled) {
+        // Test was cancelled by user - not an error
+        logDiagnose('⚠ ' + result.message, 'warning');
+        diagnosePhase.textContent = t('diagnose.testCancelled') || 'Test abgebrochen';
+        diagnosePhase.className = 'phase-text warning';
+        diagnoseEta.textContent = '';
+        statsSummaryBadge.textContent = t('messages.cancelled') || 'Abgebrochen';
+        statsSummaryBadge.className = 'status-badge warning';
+        statsSummaryBadge.classList.remove('hidden');
+      } else if (result.success) {
         logDiagnose('✓ ' + result.message, 'success');
         diagnosePhase.textContent = '✓ ' + t('diagnose.testComplete');
         diagnosePhase.className = 'phase-text success';

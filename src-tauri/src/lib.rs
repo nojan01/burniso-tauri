@@ -815,6 +815,28 @@ fn parse_dd_speed(output: &str) -> f64 {
     0.0
 }
 
+/// Parse dd output to extract bytes transferred and time in seconds
+/// dd outputs: "8388608 bytes transferred in 0.5 secs (16777216 bytes/sec)"
+/// Returns (bytes, seconds) or None if parsing fails
+fn parse_dd_bytes_and_time(output: &str) -> Option<(u64, f64)> {
+    // Look for "X bytes transferred in Y secs" pattern
+    if let Some(bytes_pos) = output.find(" bytes transferred in ") {
+        let before_bytes = &output[..bytes_pos];
+        let bytes_str = before_bytes.split_whitespace().last()?;
+        let bytes: u64 = bytes_str.parse().ok()?;
+        
+        let after_in = &output[bytes_pos + 22..];
+        let time_str = after_in.split_whitespace().next()?;
+        let time: f64 = time_str.parse().ok()?;
+        
+        if time > 0.0 && bytes > 0 {
+            return Some((bytes, time));
+        }
+    }
+    
+    None
+}
+
 /// Surface scan - read all sectors and detect read errors (non-destructive)
 #[tauri::command]
 async fn diagnose_surface_scan(app: AppHandle, disk_id: String, password: String) -> Result<DiagnoseResult, String> {
@@ -1147,15 +1169,42 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
     
     // Test with different block sizes for accurate speed measurement
     // Larger blocks = more realistic max speed, smaller blocks = more IO overhead
-    // More data per test = better average values
+    // Test ~10% of total disk capacity for meaningful results (min 100MB, max 50GB per test)
+    // For a 256GB drive, this means testing ~26GB total (split across 3 block sizes)
+    let test_percentage = 0.10; // 10% of disk capacity
+    let total_test_bytes = (total_bytes as f64 * test_percentage) as u64;
+    let per_test_bytes = total_test_bytes / 3; // Split across 3 block size tests
+    
+    // Minimum 100MB, maximum 50GB per test for practical limits
+    let min_test_bytes: u64 = 100 * 1024 * 1024;       // 100 MB minimum
+    let max_test_bytes: u64 = 50 * 1024 * 1024 * 1024; // 50 GB maximum
+    let capped_test_bytes = per_test_bytes.max(min_test_bytes).min(max_test_bytes);
+    
+    // Calculate block counts based on capped test size
+    let count_1m = capped_test_bytes / (1 * 1024 * 1024);    // blocks for 1MB test
+    let count_4m = capped_test_bytes / (4 * 1024 * 1024);    // blocks for 4MB test
+    let count_16m = capped_test_bytes / (16 * 1024 * 1024);  // blocks for 16MB test
+    
     let block_sizes: [(u64, &str, u64); 3] = [
-        (1 * 1024 * 1024, "1m", 32),    // 32MB total with 1MB blocks
-        (4 * 1024 * 1024, "4m", 16),    // 64MB total with 4MB blocks
-        (16 * 1024 * 1024, "16m", 8),   // 128MB total with 16MB blocks
+        (1 * 1024 * 1024, "1m", count_1m.max(10)),     // At least 10 blocks
+        (4 * 1024 * 1024, "4m", count_4m.max(5)),      // At least 5 blocks
+        (16 * 1024 * 1024, "16m", count_16m.max(3)),   // At least 3 blocks
     ];
     let total_tests = block_sizes.len() as u32;
     
-    emit_diagnose_progress(&app, 0, "Starte Geschwindigkeitstest...", "starting", 0, 0, 0.0, 0.0);
+    // Calculate and log total test size for transparency
+    let total_test_size_mb = block_sizes.iter()
+        .map(|(bs, _, cnt)| (bs * cnt) / (1024 * 1024))
+        .sum::<u64>();
+    
+    // Format test size for display
+    let test_size_display = if total_test_size_mb >= 1024 {
+        format!("{:.1} GB", total_test_size_mb as f64 / 1024.0)
+    } else {
+        format!("{} MB", total_test_size_mb)
+    };
+    
+    emit_diagnose_progress(&app, 0, &format!("Starte Geschwindigkeitstest ({})...", test_size_display), "starting", 0, 0, 0.0, 0.0);
     
     // Clone password for use in blocking thread
     let password_clone = password.clone();
@@ -1166,6 +1215,10 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
         let mut all_results: Vec<(String, f64, f64)> = Vec::new();
         let mut best_write = 0.0f64;
         let mut best_read = 0.0f64;
+        
+        // Maximum blocks per chunk to show progress frequently
+        // With typical USB speeds (20-100 MB/s), 256MB chunks take 2-12 seconds
+        let max_mb_per_chunk: u64 = 256; // 256 MB max per chunk for visible progress
         
         for (test_idx, (block_size, bs_str, count)) in block_sizes.iter().enumerate() {
             if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
@@ -1186,47 +1239,108 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
             let block_mb = block_size / 1024 / 1024;
             let test_name = format!("{}MB Blöcke", block_mb);
             
-            // Calculate progress percentages
-            let base_progress = ((test_idx as u32) * 100) / total_tests;
-            let mid_progress = base_progress + (50 / total_tests);
-            let end_progress = ((test_idx as u32 + 1) * 100) / total_tests;
+            // Format test size for display (MB or GB)
+            let test_size_str = if test_mb >= 1024 {
+                format!("{:.1} GB", test_mb as f64 / 1024.0)
+            } else {
+                format!("{} MB", test_mb)
+            };
+            
+            // Calculate how many blocks per chunk (to show progress every ~256MB)
+            let blocks_per_chunk = (max_mb_per_chunk / block_mb).max(1);
+            let total_chunks = (*count as f64 / blocks_per_chunk as f64).ceil() as u64;
+            
+            // Calculate progress percentages for this test
+            let test_progress_start = ((test_idx as u32) * 100) / total_tests;
+            let test_progress_range = 100 / total_tests;
             
             // === WRITE TEST ===
-            emit_diagnose_progress(&app_clone, base_progress, 
-                &format!("Test {}/{}: {} - Schreibe {} MB...", test_idx + 1, total_tests, test_name, test_mb), 
+            emit_diagnose_progress(&app_clone, test_progress_start, 
+                &format!("Test {}/{}: {} - Schreibe {}...", test_idx + 1, total_tests, test_name, test_size_str), 
                 "writing", 0, 0, best_read, best_write);
             
-            // Small delay to ensure UI updates
             std::thread::sleep(std::time::Duration::from_millis(50));
             
-            // Write test - parse dd output for accurate speed measurement
-            // dd outputs speed in stderr like: "8388608 bytes transferred in 0.5 secs (16777216 bytes/sec)"
-            let dd_write = format!(
-                "echo '{}' | sudo -S dd if=/dev/zero of={} bs={} count={} 2>&1",
-                password_clone.replace("'", "'\\''"),
-                device_path,
-                bs_str,
-                count
-            );
+            // Write in chunks for visible progress
+            let mut total_write_bytes: u64 = 0;
+            let mut total_write_time: f64 = 0.0;
+            let mut blocks_written: u64 = 0;
+            let mut chunk_num: u64 = 0;
             
-            let write_result = Command::new("sh").args(["-c", &dd_write]).output();
-            
-            // Parse dd output for bytes/sec - check both stdout and stderr
-            let write_speed = match &write_result {
-                Ok(output) => {
+            while blocks_written < *count {
+                if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                    return DiagnoseResult {
+                        success: false,
+                        total_sectors: total_bytes / 512,
+                        sectors_checked: 0,
+                        errors_found: 0,
+                        bad_sectors: Vec::new(),
+                        read_speed_mbps: best_read,
+                        write_speed_mbps: best_write,
+                        message: "Test abgebrochen".to_string(),
+                    };
+                }
+                
+                let remaining = *count - blocks_written;
+                let chunk_blocks = remaining.min(blocks_per_chunk);
+                let offset_blocks = blocks_written;
+                
+                // Update progress before each chunk
+                let chunk_progress = test_progress_start + 
+                    ((chunk_num as u32 * test_progress_range / 2) / total_chunks.max(1) as u32);
+                let written_so_far_mb = (blocks_written * block_size) / (1024 * 1024);
+                let written_display = if written_so_far_mb >= 1024 {
+                    format!("{:.1} GB", written_so_far_mb as f64 / 1024.0)
+                } else {
+                    format!("{} MB", written_so_far_mb)
+                };
+                
+                emit_diagnose_progress(&app_clone, chunk_progress, 
+                    &format!("Test {}/{}: {} - Schreibe {} von {}...", 
+                        test_idx + 1, total_tests, test_name, written_display, test_size_str), 
+                    "writing", 0, 0, best_read, best_write);
+                
+                // Write chunk with seek to correct position
+                let dd_write = format!(
+                    "echo '{}' | sudo -S dd if=/dev/zero of={} bs={} count={} seek={} 2>&1",
+                    password_clone.replace("'", "'\\''"),
+                    device_path,
+                    bs_str,
+                    chunk_blocks,
+                    offset_blocks
+                );
+                
+                let write_result = Command::new("sh").args(["-c", &dd_write]).output();
+                
+                // Parse result and accumulate
+                if let Ok(output) = &write_result {
                     let stdout_str = String::from_utf8_lossy(&output.stdout);
                     let stderr_str = String::from_utf8_lossy(&output.stderr);
-                    // Try stdout first (where 2>&1 should redirect), then stderr
-                    let speed = parse_dd_speed(&stdout_str);
-                    if speed > 0.0 { speed } else { parse_dd_speed(&stderr_str) }
-                },
-                Err(_) => 0.0,
+                    let combined = format!("{}{}", stdout_str, stderr_str);
+                    
+                    // Parse bytes and time from dd output
+                    if let Some((bytes, secs)) = parse_dd_bytes_and_time(&combined) {
+                        total_write_bytes += bytes;
+                        total_write_time += secs;
+                    }
+                }
+                
+                blocks_written += chunk_blocks;
+                chunk_num += 1;
+            }
+            
+            // Calculate average write speed
+            let write_speed = if total_write_time > 0.0 {
+                (total_write_bytes as f64 / total_write_time) / (1024.0 * 1024.0)
+            } else {
+                0.0
             };
             
             if write_speed > 0.0 {
                 best_write = best_write.max(write_speed);
             }
             
+            let mid_progress = test_progress_start + (test_progress_range / 2);
             emit_diagnose_progress(&app_clone, mid_progress, 
                 &format!("Test {}/{}: {} - Schreiben: {:.1} MB/s", test_idx + 1, total_tests, test_name, write_speed), 
                 "writing", 0, 0, best_read, best_write);
@@ -1235,31 +1349,83 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
             
             // === READ TEST ===
             emit_diagnose_progress(&app_clone, mid_progress, 
-                &format!("Test {}/{}: {} - Lese {} MB...", test_idx + 1, total_tests, test_name, test_mb), 
+                &format!("Test {}/{}: {} - Lese {}...", test_idx + 1, total_tests, test_name, test_size_str), 
                 "reading", 0, 0, best_read, best_write);
             
             std::thread::sleep(std::time::Duration::from_millis(50));
             
-            // Read test - parse dd output for accurate speed measurement
-            let dd_read = format!(
-                "echo '{}' | sudo -S dd if={} of=/dev/null bs={} count={} 2>&1",
-                password_clone.replace("'", "'\\''"),
-                device_path,
-                bs_str,
-                count
-            );
+            // Read in chunks for visible progress
+            let mut total_read_bytes: u64 = 0;
+            let mut total_read_time: f64 = 0.0;
+            let mut blocks_read: u64 = 0;
+            chunk_num = 0;
             
-            let read_result = Command::new("sh").args(["-c", &dd_read]).output();
-            
-            // Parse dd output for bytes/sec - check both stdout and stderr
-            let read_speed = match &read_result {
-                Ok(output) => {
+            while blocks_read < *count {
+                if CANCEL_DIAGNOSE.load(Ordering::SeqCst) {
+                    return DiagnoseResult {
+                        success: false,
+                        total_sectors: total_bytes / 512,
+                        sectors_checked: 0,
+                        errors_found: 0,
+                        bad_sectors: Vec::new(),
+                        read_speed_mbps: best_read,
+                        write_speed_mbps: best_write,
+                        message: "Test abgebrochen".to_string(),
+                    };
+                }
+                
+                let remaining = *count - blocks_read;
+                let chunk_blocks = remaining.min(blocks_per_chunk);
+                let offset_blocks = blocks_read;
+                
+                // Update progress before each chunk
+                let chunk_progress = mid_progress + 
+                    ((chunk_num as u32 * test_progress_range / 2) / total_chunks.max(1) as u32);
+                let read_so_far_mb = (blocks_read * block_size) / (1024 * 1024);
+                let read_display = if read_so_far_mb >= 1024 {
+                    format!("{:.1} GB", read_so_far_mb as f64 / 1024.0)
+                } else {
+                    format!("{} MB", read_so_far_mb)
+                };
+                
+                emit_diagnose_progress(&app_clone, chunk_progress, 
+                    &format!("Test {}/{}: {} - Lese {} von {}...", 
+                        test_idx + 1, total_tests, test_name, read_display, test_size_str), 
+                    "reading", 0, 0, best_read, best_write);
+                
+                // Read chunk with skip to correct position
+                let dd_read = format!(
+                    "echo '{}' | sudo -S dd if={} of=/dev/null bs={} count={} skip={} 2>&1",
+                    password_clone.replace("'", "'\\''"),
+                    device_path,
+                    bs_str,
+                    chunk_blocks,
+                    offset_blocks
+                );
+                
+                let read_result = Command::new("sh").args(["-c", &dd_read]).output();
+                
+                // Parse result and accumulate
+                if let Ok(output) = &read_result {
                     let stdout_str = String::from_utf8_lossy(&output.stdout);
                     let stderr_str = String::from_utf8_lossy(&output.stderr);
-                    let speed = parse_dd_speed(&stdout_str);
-                    if speed > 0.0 { speed } else { parse_dd_speed(&stderr_str) }
-                },
-                Err(_) => 0.0,
+                    let combined = format!("{}{}", stdout_str, stderr_str);
+                    
+                    if let Some((bytes, secs)) = parse_dd_bytes_and_time(&combined) {
+                        total_read_bytes += bytes;
+                        total_read_time += secs;
+                    }
+                }
+                
+                blocks_read += chunk_blocks;
+                chunk_num += 1;
+            }
+            
+            // Calculate average read speed
+            let read_speed = if total_read_time > 0.0 {
+                (total_read_bytes as f64 / total_read_time) / (1024.0 * 1024.0)
+            } else {
+                0.0
             };
             
             if read_speed > 0.0 {
@@ -1269,6 +1435,7 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
             // Store results
             all_results.push((test_name.clone(), write_speed, read_speed));
             
+            let end_progress = ((test_idx as u32 + 1) * 100) / total_tests;
             emit_diagnose_progress(&app_clone, end_progress, 
                 &format!("Test {}/{}: {} - W: {:.1} / R: {:.1} MB/s", 
                     test_idx + 1, total_tests, test_name, write_speed, read_speed), 
@@ -1312,25 +1479,72 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
 
 #[tauri::command]
 fn list_disks() -> Result<Vec<DiskInfo>, String> {
-    // "external physical" zeigt nur echte physische externe Geräte (keine Disk-Images)
-    let output = Command::new("diskutil").args(["list", "external", "physical"]).output()
-        .map_err(|e| format!("diskutil Fehler: {}", e))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Strategy: Get external physical disks + internal removable media (like built-in SD card readers)
+    // The built-in SD card reader is classified as "internal" but has "Removable Media: Removable"
+    
     let mut disks: Vec<DiskInfo> = Vec::new();
-    for line in stdout.lines() {
+    let mut seen_disk_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    
+    // First: Get external physical disks (USB drives, external SSDs, etc.)
+    let external_output = Command::new("diskutil").args(["list", "external", "physical"]).output()
+        .map_err(|e| format!("diskutil Fehler: {}", e))?;
+    let external_stdout = String::from_utf8_lossy(&external_output.stdout);
+    
+    for line in external_stdout.lines() {
         if line.starts_with("/dev/disk") {
             if let Some(caps) = regex_lite::Regex::new(r"/dev/(disk\d+)")
                 .ok().and_then(|re| re.captures(line)) {
                 let disk_id = caps.get(1).unwrap().as_str().to_string();
-                if !disks.iter().any(|d| d.id == disk_id) {
+                if !seen_disk_ids.contains(&disk_id) {
                     if let Ok(info) = get_disk_details(&disk_id) {
+                        seen_disk_ids.insert(disk_id);
                         disks.push(info);
                     }
                 }
             }
         }
     }
+    
+    // Second: Get internal physical disks and filter for removable media (SD cards)
+    let internal_output = Command::new("diskutil").args(["list", "internal", "physical"]).output()
+        .map_err(|e| format!("diskutil Fehler: {}", e))?;
+    let internal_stdout = String::from_utf8_lossy(&internal_output.stdout);
+    
+    for line in internal_stdout.lines() {
+        if line.starts_with("/dev/disk") {
+            if let Some(caps) = regex_lite::Regex::new(r"/dev/(disk\d+)")
+                .ok().and_then(|re| re.captures(line)) {
+                let disk_id = caps.get(1).unwrap().as_str().to_string();
+                if !seen_disk_ids.contains(&disk_id) {
+                    // Check if this is a removable media (SD card, etc.)
+                    if is_removable_media(&disk_id) {
+                        if let Ok(info) = get_disk_details(&disk_id) {
+                            seen_disk_ids.insert(disk_id);
+                            disks.push(info);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     Ok(disks)
+}
+
+/// Check if a disk has removable media (like SD cards in built-in readers)
+fn is_removable_media(disk_id: &str) -> bool {
+    let output = Command::new("diskutil").args(["info", disk_id]).output();
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            // Check for "Removable Media: Removable" or "Removable Media: Yes"
+            if line.contains("Removable Media:") {
+                let value = line.split(':').nth(1).map(|s| s.trim().to_lowercase()).unwrap_or_default();
+                return value == "removable" || value == "yes";
+            }
+        }
+    }
+    false
 }
 
 fn get_disk_details(disk_id: &str) -> Result<DiskInfo, String> {
