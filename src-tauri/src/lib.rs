@@ -403,7 +403,7 @@ static CANCEL_BURN: AtomicBool = AtomicBool::new(false);
 static CANCEL_BACKUP: AtomicBool = AtomicBool::new(false);
 static CANCEL_DIAGNOSE: AtomicBool = AtomicBool::new(false);
 
-/// SMART data structure
+/// SMART data structure - Extended with all smartctl -x data
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SmartData {
     pub available: bool,
@@ -417,6 +417,48 @@ pub struct SmartData {
     pub attributes: Vec<SmartAttribute>,
     pub source: String, // "smartctl" or "diskutil" or "none"
     pub error_message: Option<String>,
+    // Extended device info (from smartctl -x)
+    pub model_family: Option<String>,
+    pub device_model: Option<String>,
+    pub serial_number: Option<String>,
+    pub firmware_version: Option<String>,
+    pub user_capacity_bytes: Option<u64>,
+    pub logical_block_size: Option<u32>,
+    pub physical_block_size: Option<u32>,
+    pub rotation_rate: Option<u32>,        // 0 = SSD, >0 = HDD RPM
+    pub form_factor: Option<String>,       // "2.5 inches", "3.5 inches", etc.
+    pub device_type: Option<String>,       // "ata", "nvme", "scsi"
+    pub protocol: Option<String>,          // "ATA", "NVMe", "SCSI"
+    // SATA/ATA info
+    pub ata_version: Option<String>,
+    pub sata_version: Option<String>,
+    pub interface_speed_max: Option<String>,
+    pub interface_speed_current: Option<String>,
+    // SMART capabilities
+    pub smart_enabled: Option<bool>,
+    pub read_lookahead_enabled: Option<bool>,
+    pub write_cache_enabled: Option<bool>,
+    pub trim_supported: Option<bool>,
+    // ATA Security
+    pub ata_security_enabled: Option<bool>,
+    pub ata_security_frozen: Option<bool>,
+    // SCT (SMART Command Transport) Temperature
+    pub sct_temperature_current: Option<i32>,
+    pub sct_temperature_lifetime_min: Option<i32>,
+    pub sct_temperature_lifetime_max: Option<i32>,
+    pub sct_temperature_op_limit: Option<i32>,
+    // Self-test info
+    pub self_test_status: Option<String>,
+    pub self_test_short_minutes: Option<u32>,
+    pub self_test_extended_minutes: Option<u32>,
+    // Error logs
+    pub error_log_count: Option<u32>,
+    pub self_test_log_count: Option<u32>,
+    // SSD specific
+    pub endurance_used_percent: Option<u32>,
+    pub spare_available_percent: Option<u32>,
+    pub total_lbas_written: Option<u64>,
+    pub total_lbas_read: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -428,6 +470,8 @@ pub struct SmartAttribute {
     pub threshold: Option<String>,
     pub raw_value: String,
     pub status: String, // "ok", "warning", "critical"
+    pub flags: Option<String>,        // e.g. "PO--CK"
+    pub prefailure: Option<bool>,     // Prefailure warning attribute
 }
 
 /// Diagnose progress event with statistics
@@ -548,18 +592,110 @@ fn get_smart_data(disk_id: String) -> SmartData {
     }
     
     // No SMART data available
-    SmartData {
-        available: false,
-        health_status: "Unbekannt".to_string(),
-        temperature: None,
-        power_on_hours: None,
-        power_cycle_count: None,
-        reallocated_sectors: None,
-        pending_sectors: None,
-        uncorrectable_sectors: None,
-        attributes: Vec::new(),
-        source: "none".to_string(),
-        error_message: Some("SMART data not available for this device. USB sticks and SD cards typically do not support SMART. For USB hard drives, you can install 'smartmontools' (brew install smartmontools).".to_string()),
+    SmartData::not_available("SMART data not available for this device. USB sticks and SD cards typically do not support SMART. For USB hard drives, you can install 'smartmontools' (brew install smartmontools).")
+}
+
+impl SmartData {
+    /// Create SmartData indicating SMART is not available
+    fn not_available(message: &str) -> Self {
+        SmartData {
+            available: false,
+            health_status: "Unbekannt".to_string(),
+            temperature: None,
+            power_on_hours: None,
+            power_cycle_count: None,
+            reallocated_sectors: None,
+            pending_sectors: None,
+            uncorrectable_sectors: None,
+            attributes: Vec::new(),
+            source: "none".to_string(),
+            error_message: Some(message.to_string()),
+            model_family: None,
+            device_model: None,
+            serial_number: None,
+            firmware_version: None,
+            user_capacity_bytes: None,
+            logical_block_size: None,
+            physical_block_size: None,
+            rotation_rate: None,
+            form_factor: None,
+            device_type: None,
+            protocol: None,
+            ata_version: None,
+            sata_version: None,
+            interface_speed_max: None,
+            interface_speed_current: None,
+            smart_enabled: None,
+            read_lookahead_enabled: None,
+            write_cache_enabled: None,
+            trim_supported: None,
+            ata_security_enabled: None,
+            ata_security_frozen: None,
+            sct_temperature_current: None,
+            sct_temperature_lifetime_min: None,
+            sct_temperature_lifetime_max: None,
+            sct_temperature_op_limit: None,
+            self_test_status: None,
+            self_test_short_minutes: None,
+            self_test_extended_minutes: None,
+            error_log_count: None,
+            self_test_log_count: None,
+            endurance_used_percent: None,
+            spare_available_percent: None,
+            total_lbas_written: None,
+            total_lbas_read: None,
+        }
+    }
+    
+    /// Create basic SmartData with health status
+    fn basic(health_status: String, source: &str, error_message: Option<&str>) -> Self {
+        SmartData {
+            available: true,
+            health_status,
+            temperature: None,
+            power_on_hours: None,
+            power_cycle_count: None,
+            reallocated_sectors: None,
+            pending_sectors: None,
+            uncorrectable_sectors: None,
+            attributes: Vec::new(),
+            source: source.to_string(),
+            error_message: error_message.map(|s| s.to_string()),
+            model_family: None,
+            device_model: None,
+            serial_number: None,
+            firmware_version: None,
+            user_capacity_bytes: None,
+            logical_block_size: None,
+            physical_block_size: None,
+            rotation_rate: None,
+            form_factor: None,
+            device_type: None,
+            protocol: None,
+            ata_version: None,
+            sata_version: None,
+            interface_speed_max: None,
+            interface_speed_current: None,
+            smart_enabled: None,
+            read_lookahead_enabled: None,
+            write_cache_enabled: None,
+            trim_supported: None,
+            ata_security_enabled: None,
+            ata_security_frozen: None,
+            sct_temperature_current: None,
+            sct_temperature_lifetime_min: None,
+            sct_temperature_lifetime_max: None,
+            sct_temperature_op_limit: None,
+            self_test_status: None,
+            self_test_short_minutes: None,
+            self_test_extended_minutes: None,
+            error_log_count: None,
+            self_test_log_count: None,
+            endurance_used_percent: None,
+            spare_available_percent: None,
+            total_lbas_written: None,
+            total_lbas_read: None,
+        }
     }
 }
 
@@ -568,6 +704,7 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
     let smartctl_path = get_smartctl_path()?;
     
     let device_path = format!("/dev/{}", disk_id);
+    eprintln!("[SMART Debug] Checking disk: {} with smartctl: {}", device_path, smartctl_path);
     
     // First, quick check if SMART is supported at all (fast command)
     let info_output = Command::new(&smartctl_path)
@@ -578,37 +715,48 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
     let info_text = String::from_utf8_lossy(&info_output.stdout);
     let info_stderr = String::from_utf8_lossy(&info_output.stderr);
     
+    eprintln!("[SMART Debug] -i output contains 'SMART support': {}", info_text.contains("SMART support is:"));
+    
     // Check for common indicators that SMART is not supported
     if info_text.contains("Unknown USB bridge") 
         || info_text.contains("Device type: unknown")
         || info_stderr.contains("Unable to detect device type")
         || info_stderr.contains("Unknown USB bridge")
         || (!info_text.contains("SMART support is:") && !info_text.contains("SMART Health Status")) {
+        eprintln!("[SMART Debug] SMART not supported (early check failed)");
         return None;
     }
     
     // Check if SMART is explicitly unavailable
     if info_text.contains("SMART support is: Unavailable") 
         || info_text.contains("Device does not support SMART") {
+        eprintln!("[SMART Debug] SMART explicitly unavailable");
         return None;
     }
     
-    // Run smartctl -a (all info) with JSON output
+    eprintln!("[SMART Debug] Running smartctl -x -j ...");
+    
+    // Run smartctl -x -j (extended info with JSON output) for full data
     let output = Command::new(&smartctl_path)
-        .args(["-a", "-j", &device_path])
+        .args(["-x", "-j", &device_path])
         .output()
         .ok()?;
     
     let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!("[SMART Debug] Got {} bytes of JSON output", stdout.len());
     
     // Parse JSON output
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        eprintln!("[SMART Debug] JSON parsed successfully");
+        
         // Check if device type is recognized
-        let device_type = json.get("device").and_then(|d| d.get("type")).and_then(|t| t.as_str());
-        if device_type == Some("unknown") {
+        let device_type_val = json.get("device").and_then(|d| d.get("type")).and_then(|t| t.as_str());
+        if device_type_val == Some("unknown") {
+            eprintln!("[SMART Debug] Device type is unknown");
             return None;
         }
         
+        // Basic health status
         let smart_status = json.get("smart_status")
             .and_then(|s| s.get("passed"))
             .and_then(|p| p.as_bool());
@@ -619,6 +767,7 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
             None => "Unbekannt".to_string(),
         };
         
+        // Temperature (check multiple sources)
         let temperature = json.get("temperature")
             .and_then(|t| t.get("current"))
             .and_then(|c| c.as_i64())
@@ -631,11 +780,163 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
         let power_cycle_count = json.get("power_cycle_count")
             .and_then(|p| p.as_u64());
         
-        // Parse SMART attributes
+        // Extended device info
+        let model_family = json.get("model_family").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let device_model = json.get("model_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let serial_number = json.get("serial_number").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let firmware_version = json.get("firmware_version").and_then(|v| v.as_str()).map(|s| s.to_string());
+        
+        let user_capacity_bytes = json.get("user_capacity")
+            .and_then(|c| c.get("bytes"))
+            .and_then(|b| b.as_u64());
+        
+        let logical_block_size = json.get("logical_block_size")
+            .and_then(|b| b.as_u64())
+            .map(|b| b as u32);
+        
+        let physical_block_size = json.get("physical_block_size")
+            .and_then(|b| b.as_u64())
+            .map(|b| b as u32);
+        
+        let rotation_rate = json.get("rotation_rate")
+            .and_then(|r| r.as_u64())
+            .map(|r| r as u32);
+        
+        let form_factor = json.get("form_factor")
+            .and_then(|f| f.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string());
+        
+        let device_type = json.get("device")
+            .and_then(|d| d.get("type"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+        
+        let protocol = json.get("device")
+            .and_then(|d| d.get("protocol"))
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string());
+        
+        // ATA/SATA versions
+        let ata_version = json.get("ata_version")
+            .and_then(|v| v.get("string"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        
+        let sata_version = json.get("sata_version")
+            .and_then(|v| v.get("string"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        
+        // Interface speed
+        let interface_speed_max = json.get("interface_speed")
+            .and_then(|i| i.get("max"))
+            .and_then(|m| m.get("string"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        
+        let interface_speed_current = json.get("interface_speed")
+            .and_then(|i| i.get("current"))
+            .and_then(|c| c.get("string"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        
+        // SMART capabilities
+        let smart_enabled = json.get("smart_support")
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool());
+        
+        let read_lookahead_enabled = json.get("read_lookahead")
+            .and_then(|r| r.get("enabled"))
+            .and_then(|e| e.as_bool());
+        
+        let write_cache_enabled = json.get("write_cache")
+            .and_then(|w| w.get("enabled"))
+            .and_then(|e| e.as_bool());
+        
+        let trim_supported = json.get("trim")
+            .and_then(|t| t.get("supported"))
+            .and_then(|s| s.as_bool());
+        
+        // ATA Security
+        let ata_security_enabled = json.get("ata_security")
+            .and_then(|a| a.get("enabled"))
+            .and_then(|e| e.as_bool());
+        
+        let ata_security_frozen = json.get("ata_security")
+            .and_then(|a| a.get("frozen"))
+            .and_then(|f| f.as_bool());
+        
+        // SCT Temperature data (more detailed than basic temperature)
+        let sct_temp = json.get("ata_sct_status").and_then(|s| s.get("temperature"));
+        let sct_temperature_current = sct_temp
+            .and_then(|t| t.get("current"))
+            .and_then(|c| c.as_i64())
+            .map(|t| t as i32);
+        let sct_temperature_lifetime_min = sct_temp
+            .and_then(|t| t.get("lifetime_min"))
+            .and_then(|m| m.as_i64())
+            .map(|t| t as i32);
+        let sct_temperature_lifetime_max = sct_temp
+            .and_then(|t| t.get("lifetime_max"))
+            .and_then(|m| m.as_i64())
+            .map(|t| t as i32);
+        let sct_temperature_op_limit = sct_temp
+            .and_then(|t| t.get("op_limit_max"))
+            .and_then(|m| m.as_i64())
+            .map(|t| t as i32);
+        
+        // Self-test info
+        let self_test_status = json.get("ata_smart_data")
+            .and_then(|d| d.get("self_test"))
+            .and_then(|s| s.get("status"))
+            .and_then(|st| st.get("string"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
+        
+        let self_test_short_minutes = json.get("ata_smart_data")
+            .and_then(|d| d.get("self_test"))
+            .and_then(|s| s.get("polling_minutes"))
+            .and_then(|p| p.get("short"))
+            .and_then(|s| s.as_u64())
+            .map(|m| m as u32);
+        
+        let self_test_extended_minutes = json.get("ata_smart_data")
+            .and_then(|d| d.get("self_test"))
+            .and_then(|s| s.get("polling_minutes"))
+            .and_then(|p| p.get("extended"))
+            .and_then(|e| e.as_u64())
+            .map(|m| m as u32);
+        
+        // Error logs
+        let error_log_count = json.get("ata_smart_error_log")
+            .and_then(|e| e.get("summary"))
+            .and_then(|s| s.get("count"))
+            .and_then(|c| c.as_u64())
+            .map(|c| c as u32);
+        
+        let self_test_log_count = json.get("ata_smart_self_test_log")
+            .and_then(|l| l.get("standard"))
+            .and_then(|s| s.get("count"))
+            .and_then(|c| c.as_u64())
+            .map(|c| c as u32);
+        
+        // SSD-specific: endurance and spare
+        let endurance_used_percent = json.get("endurance_used")
+            .and_then(|e| e.as_u64())
+            .map(|e| e as u32);
+        
+        let spare_available_percent = json.get("spare_available")
+            .and_then(|s| s.as_u64())
+            .map(|s| s as u32);
+        
+        // Parse SMART attributes with extended fields
         let mut attributes = Vec::new();
         let mut reallocated_sectors = None;
         let mut pending_sectors = None;
         let mut uncorrectable_sectors = None;
+        let mut total_lbas_written: Option<u64> = None;
+        let mut total_lbas_read: Option<u64> = None;
         
         if let Some(attrs) = json.get("ata_smart_attributes").and_then(|a| a.get("table")).and_then(|t| t.as_array()) {
             for attr in attrs {
@@ -646,19 +947,43 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
                 let threshold = attr.get("thresh").and_then(|t| t.as_u64()).map(|t| t.to_string());
                 let raw_value = attr.get("raw").and_then(|r| r.get("value")).and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or("-".to_string());
                 
-                // Check for critical attributes
-                let status = if id == 5 || id == 196 || id == 197 || id == 198 {
-                    let raw = attr.get("raw").and_then(|r| r.get("value")).and_then(|v| v.as_u64()).unwrap_or(0);
-                    if raw > 0 {
-                        if id == 5 { reallocated_sectors = Some(raw); }
-                        if id == 197 { pending_sectors = Some(raw); }
-                        if id == 198 { uncorrectable_sectors = Some(raw); }
-                        "warning".to_string()
-                    } else {
+                // Extended attribute flags
+                let flags = attr.get("flags")
+                    .and_then(|f| f.get("string"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.trim().to_string());
+                
+                let prefailure = attr.get("flags")
+                    .and_then(|f| f.get("prefailure"))
+                    .and_then(|p| p.as_bool());
+                
+                // Check for critical attributes and extract special values
+                let raw = attr.get("raw").and_then(|r| r.get("value")).and_then(|v| v.as_u64()).unwrap_or(0);
+                let status = match id {
+                    5 => {  // Reallocated_Sector_Ct
+                        reallocated_sectors = Some(raw);
+                        if raw > 0 { "warning".to_string() } else { "ok".to_string() }
+                    },
+                    196 => { // Reallocated_Event_Count
+                        if raw > 0 { "warning".to_string() } else { "ok".to_string() }
+                    },
+                    197 => { // Current_Pending_Sector
+                        pending_sectors = Some(raw);
+                        if raw > 0 { "warning".to_string() } else { "ok".to_string() }
+                    },
+                    198 => { // Offline_Uncorrectable
+                        uncorrectable_sectors = Some(raw);
+                        if raw > 0 { "warning".to_string() } else { "ok".to_string() }
+                    },
+                    241 => { // Total_LBAs_Written
+                        total_lbas_written = Some(raw);
                         "ok".to_string()
-                    }
-                } else {
-                    "ok".to_string()
+                    },
+                    242 => { // Total_LBAs_Read
+                        total_lbas_read = Some(raw);
+                        "ok".to_string()
+                    },
+                    _ => "ok".to_string()
                 };
                 
                 attributes.push(SmartAttribute {
@@ -669,6 +994,8 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
                     threshold,
                     raw_value,
                     status,
+                    flags,
+                    prefailure,
                 });
             }
         }
@@ -685,11 +1012,46 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
             attributes,
             source: "smartctl".to_string(),
             error_message: None,
+            // Extended fields
+            model_family,
+            device_model,
+            serial_number,
+            firmware_version,
+            user_capacity_bytes,
+            logical_block_size,
+            physical_block_size,
+            rotation_rate,
+            form_factor,
+            device_type,
+            protocol,
+            ata_version,
+            sata_version,
+            interface_speed_max,
+            interface_speed_current,
+            smart_enabled,
+            read_lookahead_enabled,
+            write_cache_enabled,
+            trim_supported,
+            ata_security_enabled,
+            ata_security_frozen,
+            sct_temperature_current,
+            sct_temperature_lifetime_min,
+            sct_temperature_lifetime_max,
+            sct_temperature_op_limit,
+            self_test_status,
+            self_test_short_minutes,
+            self_test_extended_minutes,
+            error_log_count,
+            self_test_log_count,
+            endurance_used_percent,
+            spare_available_percent,
+            total_lbas_written,
+            total_lbas_read,
         });
     }
     
     // Try plain text parsing if JSON fails
-    let output_text = Command::new("smartctl")
+    let output_text = Command::new(&smartctl_path)
         .args(["-H", "-A", &device_path])
         .output()
         .ok()?;
@@ -705,19 +1067,11 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
             "Unbekannt".to_string()
         };
         
-        return Some(SmartData {
-            available: true,
+        return Some(SmartData::basic(
             health_status,
-            temperature: None,
-            power_on_hours: None,
-            power_cycle_count: None,
-            reallocated_sectors: None,
-            pending_sectors: None,
-            uncorrectable_sectors: None,
-            attributes: Vec::new(),
-            source: "smartctl".to_string(),
-            error_message: Some("Detailed SMART data could not be read.".to_string()),
-        });
+            "smartctl",
+            Some("Detailed SMART data could not be read.")
+        ));
     }
     
     None
@@ -750,19 +1104,11 @@ fn try_diskutil_smart(disk_id: &str) -> Option<SmartData> {
                 status.to_string()
             };
             
-            return Some(SmartData {
-                available: true,
+            return Some(SmartData::basic(
                 health_status,
-                temperature: None,
-                power_on_hours: None,
-                power_cycle_count: None,
-                reallocated_sectors: None,
-                pending_sectors: None,
-                uncorrectable_sectors: None,
-                attributes: Vec::new(),
-                source: "diskutil".to_string(),
-                error_message: Some("Only basic SMART status available. For detailed data, install 'smartmontools' (brew install smartmontools).".to_string()),
-            });
+                "diskutil",
+                Some("Only basic SMART status available. For detailed data, install 'smartmontools' (brew install smartmontools).")
+            ));
         }
     }
     
@@ -780,39 +1126,6 @@ fn emit_diagnose_progress(app: &AppHandle, percent: u32, status: &str, phase: &s
         read_speed_mbps: read_speed,
         write_speed_mbps: write_speed,
     });
-}
-
-/// Parse dd output to extract speed in MB/s
-/// dd outputs: "8388608 bytes transferred in 0.5 secs (16777216 bytes/sec)"
-fn parse_dd_speed(output: &str) -> f64 {
-    // Try to find "bytes/sec" pattern first (most accurate)
-    if let Some(start) = output.rfind('(') {
-        if let Some(end) = output.find(" bytes/sec)") {
-            if end > start {
-                let speed_str = &output[start + 1..end];
-                if let Ok(bytes_per_sec) = speed_str.parse::<f64>() {
-                    return bytes_per_sec / 1_048_576.0;
-                }
-            }
-        }
-    }
-    
-    // Fallback: parse "X bytes transferred in Y secs"
-    if let Some(bytes_pos) = output.find(" bytes transferred in ") {
-        let before_bytes = &output[..bytes_pos];
-        let bytes_str = before_bytes.split_whitespace().last().unwrap_or("0");
-        let bytes: f64 = bytes_str.parse().unwrap_or(0.0);
-        
-        let after_in = &output[bytes_pos + 22..];
-        let time_str = after_in.split_whitespace().next().unwrap_or("1");
-        let time: f64 = time_str.parse().unwrap_or(1.0);
-        
-        if time > 0.0 && bytes > 0.0 {
-            return (bytes / time) / 1_048_576.0;
-        }
-    }
-    
-    0.0
 }
 
 /// Parse dd output to extract bytes transferred and time in seconds
@@ -2266,6 +2579,26 @@ async fn secure_erase(
 #[tauri::command]
 async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_json::Value, String> {
     let escaped_password = password.replace("'", "'\\''");
+    
+    // 0. Validate password first with a simple sudo command
+    let password_check_cmd = format!(
+        "echo '{}' | sudo -S -v 2>&1",
+        escaped_password
+    );
+    
+    if let Ok(output) = Command::new("sh").args(["-c", &password_check_cmd]).output() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{}{}", stdout, stderr);
+        
+        if combined.contains("Sorry, try again") || 
+           combined.contains("incorrect password") ||
+           combined.contains("no password was provided") ||
+           combined.contains("Authentication failed") {
+            return Err("Falsches Passwort. Bitte geben Sie Ihr Admin-Passwort korrekt ein.".to_string());
+        }
+    }
+    
     let mut result = serde_json::json!({
         "disk_id": disk_id,
         "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -2345,6 +2678,279 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
                 }
             }
         }
+        
+        // Collect information from ALL partitions (s1, s2, s3, etc.)
+        let mut partitions_info: Vec<serde_json::Value> = Vec::new();
+        let mut main_partition_idx: Option<usize> = None;
+        let mut main_partition_size: u64 = 0;
+        
+        for suffix in 1..=10 {  // Check up to 10 partitions
+            let partition_id = format!("{}s{}", disk_id, suffix);
+            let partition_cmd = format!(
+                "echo '{}' | sudo -S diskutil info {} 2>/dev/null",
+                escaped_password, partition_id
+            );
+            
+            if let Ok(part_output) = Command::new("sh").args(["-c", &partition_cmd]).output() {
+                let part_stdout = String::from_utf8_lossy(&part_output.stdout);
+                
+                // Check if partition exists (output should contain device identifier)
+                if !part_stdout.contains("Device Identifier") {
+                    continue;
+                }
+                
+                let mut part_info = serde_json::Map::new();
+                part_info.insert("partition_id".to_string(), serde_json::json!(partition_id));
+                
+                let mut part_size_bytes: u64 = 0;
+                let mut is_efi = false;
+                
+                for line in part_stdout.lines() {
+                    if let Some((key, value)) = line.split_once(':') {
+                        let key = key.trim();
+                        let value = value.trim();
+                        if !value.is_empty() {
+                            match key {
+                                "Volume Name" => {
+                                    if !value.contains("Not applicable") {
+                                        part_info.insert("volume_name".to_string(), serde_json::json!(value));
+                                    }
+                                },
+                                "Mount Point" => {
+                                    if !value.contains("Not applicable") {
+                                        part_info.insert("mount_point".to_string(), serde_json::json!(value));
+                                    }
+                                },
+                                "File System Personality" => {
+                                    part_info.insert("filesystem".to_string(), serde_json::json!(value));
+                                },
+                                "Name (User Visible)" => {
+                                    part_info.insert("filesystem_name".to_string(), serde_json::json!(value));
+                                },
+                                "Content (IOContent)" => {
+                                    part_info.insert("content_type".to_string(), serde_json::json!(value));
+                                    if value.contains("EFI") {
+                                        is_efi = true;
+                                    }
+                                    // Use content type as filesystem if no filesystem detected
+                                    // and it's a known filesystem type
+                                    if !part_info.contains_key("filesystem") {
+                                        let fs_from_content = match value {
+                                            "Microsoft Basic Data" => Some("NTFS/FAT/exFAT"),
+                                            "Linux Filesystem" => Some("Linux (ext2/3/4)"),
+                                            "Linux Swap" => Some("Linux Swap"),
+                                            "Apple_HFS" => Some("HFS+"),
+                                            "Apple_HFSX" => Some("HFS+ (Case-sensitive)"),
+                                            "Apple_Boot" => Some("Apple Boot"),
+                                            "Apple_APFS_ISC" => Some("APFS (System)"),
+                                            "Apple_APFS_Recovery" => Some("APFS (Recovery)"),
+                                            _ => None,
+                                        };
+                                        if let Some(fs_name) = fs_from_content {
+                                            part_info.insert("filesystem".to_string(), serde_json::json!(fs_name));
+                                        }
+                                    }
+                                },
+                                "Partition Type" => {
+                                    part_info.insert("partition_type".to_string(), serde_json::json!(value));
+                                    if value.contains("EFI") || value == "0xEF" {
+                                        is_efi = true;
+                                    }
+                                    // If it's Apple_APFS, use that as filesystem
+                                    if value.contains("Apple_APFS") {
+                                        part_info.insert("filesystem".to_string(), serde_json::json!("APFS Container"));
+                                    }
+                                    // Translate known MBR partition types to readable names
+                                    let fs_from_type = match value {
+                                        "0xEF" => Some("EFI System Partition"),
+                                        "0x07" => Some("NTFS/exFAT/HPFS"),
+                                        "0x0B" | "0x0C" => Some("FAT32"),
+                                        "0x01" | "0x04" | "0x06" | "0x0E" => Some("FAT16/FAT12"),
+                                        "0x83" => Some("Linux (ext2/3/4)"),
+                                        "0x82" => Some("Linux Swap"),
+                                        "0x8E" => Some("Linux LVM"),
+                                        "0xFD" => Some("Linux RAID"),
+                                        "0xAF" => Some("Apple HFS/HFS+"),
+                                        "0xAB" => Some("Apple Boot"),
+                                        "0xA5" => Some("FreeBSD"),
+                                        "0xA6" => Some("OpenBSD"),
+                                        "0xA9" => Some("NetBSD"),
+                                        "0x00" => Some("Leer/Unpartitioniert"),
+                                        _ => None,
+                                    };
+                                    if let Some(fs_name) = fs_from_type {
+                                        if !part_info.contains_key("filesystem") {
+                                            part_info.insert("filesystem".to_string(), serde_json::json!(fs_name));
+                                        }
+                                    }
+                                },
+                                "Disk Size" => {
+                                    part_info.insert("size".to_string(), serde_json::json!(value));
+                                    // Parse size in bytes from format like "209.7 MB (209715200 Bytes)"
+                                    if let Some(start) = value.find('(') {
+                                        if let Some(end) = value.find(" Bytes") {
+                                            if let Ok(bytes) = value[start+1..end].trim().replace(",", "").parse::<u64>() {
+                                                part_size_bytes = bytes;
+                                            }
+                                        }
+                                    }
+                                },
+                                "Volume Total Space" => {
+                                    part_info.insert("total_space".to_string(), serde_json::json!(value));
+                                },
+                                "Volume Free Space" => {
+                                    part_info.insert("free_space".to_string(), serde_json::json!(value));
+                                },
+                                "Volume Used Space" => {
+                                    part_info.insert("used_space".to_string(), serde_json::json!(value));
+                                },
+                                "Volume UUID" => {
+                                    part_info.insert("volume_uuid".to_string(), serde_json::json!(value));
+                                },
+                                "APFS Container" => {
+                                    // This is an APFS Physical Store - get container info
+                                    part_info.insert("apfs_container".to_string(), serde_json::json!(value));
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                
+                // If this is an APFS Physical Store, get container and volume info
+                if let Some(container) = part_info.get("apfs_container").and_then(|c| c.as_str()) {
+                    // Get APFS container info
+                    let apfs_cmd = format!("diskutil apfs list {} 2>/dev/null", container);
+                    if let Ok(apfs_output) = Command::new("sh").args(["-c", &apfs_cmd]).output() {
+                        let apfs_stdout = String::from_utf8_lossy(&apfs_output.stdout);
+                        
+                        // Parse volumes from APFS container output
+                        let mut apfs_volumes: Vec<serde_json::Value> = Vec::new();
+                        let mut current_volume: Option<serde_json::Map<String, serde_json::Value>> = None;
+                        
+                        for line in apfs_stdout.lines() {
+                            let trimmed = line.trim();
+                            
+                            if trimmed.starts_with("+-> Volume ") {
+                                // Save previous volume if exists
+                                if let Some(vol) = current_volume.take() {
+                                    apfs_volumes.push(serde_json::json!(vol));
+                                }
+                                // Start new volume
+                                let mut vol = serde_json::Map::new();
+                                // Extract volume disk ID (e.g., "disk6s1")
+                                if let Some(vol_id) = trimmed.split_whitespace().nth(2) {
+                                    vol.insert("volume_id".to_string(), serde_json::json!(vol_id));
+                                }
+                                current_volume = Some(vol);
+                            } else if let Some(ref mut vol) = current_volume {
+                                if let Some((key, value)) = trimmed.split_once(':') {
+                                    let key = key.trim();
+                                    let value = value.trim();
+                                    match key {
+                                        "Name" => {
+                                            vol.insert("name".to_string(), serde_json::json!(value));
+                                        },
+                                        "Mount Point" => {
+                                            vol.insert("mount_point".to_string(), serde_json::json!(value));
+                                        },
+                                        "Capacity Consumed" => {
+                                            vol.insert("used".to_string(), serde_json::json!(value));
+                                        },
+                                        "FileVault" => {
+                                            vol.insert("filevault".to_string(), serde_json::json!(value));
+                                        },
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        // Add last volume
+                        if let Some(vol) = current_volume {
+                            apfs_volumes.push(serde_json::json!(vol));
+                        }
+                        
+                        if !apfs_volumes.is_empty() {
+                            part_info.insert("apfs_volumes".to_string(), serde_json::json!(apfs_volumes));
+                            
+                            // Use first volume's mount point for display
+                            if let Some(first_vol) = apfs_volumes.first() {
+                                if let Some(mp) = first_vol.get("mount_point").and_then(|m| m.as_str()) {
+                                    if !mp.contains("Not mounted") && !mp.is_empty() {
+                                        part_info.insert("mount_point".to_string(), serde_json::json!(mp));
+                                    }
+                                }
+                                if let Some(name) = first_vol.get("name").and_then(|n| n.as_str()) {
+                                    part_info.insert("volume_name".to_string(), serde_json::json!(name));
+                                }
+                            }
+                        }
+                        
+                        // Parse container capacity info
+                        for line in apfs_stdout.lines() {
+                            let trimmed = line.trim();
+                            if trimmed.starts_with("Capacity In Use By Volumes:") {
+                                if let Some(val) = trimmed.split(':').nth(1) {
+                                    part_info.insert("used_space".to_string(), serde_json::json!(val.trim()));
+                                }
+                            } else if trimmed.starts_with("Capacity Not Allocated:") {
+                                if let Some(val) = trimmed.split(':').nth(1) {
+                                    part_info.insert("free_space".to_string(), serde_json::json!(val.trim()));
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Track the main (largest non-EFI) partition
+                if !is_efi && part_size_bytes > main_partition_size {
+                    main_partition_size = part_size_bytes;
+                    main_partition_idx = Some(partitions_info.len());
+                }
+                
+                partitions_info.push(serde_json::json!(part_info));
+            }
+        }
+        
+        // Add partitions array to result
+        if !partitions_info.is_empty() {
+            result["partitions"] = serde_json::json!(partitions_info);
+            
+            // Use main partition info for disk_info if volume_name is not set
+            let volume_name = disk_info.get("volume_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            
+            if (volume_name.contains("Not applicable") || volume_name.is_empty()) && main_partition_idx.is_some() {
+                if let Some(idx) = main_partition_idx {
+                    if let Some(main_part) = partitions_info.get(idx) {
+                        // Copy main partition info to disk_info
+                        if let Some(v) = main_part.get("volume_name") {
+                            disk_info.insert("volume_name".to_string(), v.clone());
+                        }
+                        if let Some(v) = main_part.get("mount_point") {
+                            disk_info.insert("mount_point".to_string(), v.clone());
+                        }
+                        if let Some(v) = main_part.get("filesystem") {
+                            disk_info.insert("filesystem".to_string(), v.clone());
+                        }
+                        if let Some(v) = main_part.get("filesystem_name") {
+                            disk_info.insert("filesystem_name".to_string(), v.clone());
+                        }
+                        if let Some(v) = main_part.get("total_space") {
+                            disk_info.insert("total_space".to_string(), v.clone());
+                        }
+                        if let Some(v) = main_part.get("free_space") {
+                            disk_info.insert("free_space".to_string(), v.clone());
+                        }
+                        if let Some(v) = main_part.get("used_space") {
+                            disk_info.insert("used_space".to_string(), v.clone());
+                        }
+                    }
+                }
+            }
+        }
+        
         result["disk_info"] = serde_json::json!(disk_info);
     }
     
@@ -2359,13 +2965,84 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
         result["partition_layout"] = serde_json::json!(stdout.trim());
     }
     
-    // 3. Get USB device info from system_profiler
-    let usb_cmd = "system_profiler SPUSBDataType -json 2>/dev/null";
-    if let Ok(output) = Command::new("sh").args(["-c", usb_cmd]).output() {
+    // 3. Get device info - check SD Card Reader FIRST (more specific match by bsd_name)
+    // then fall back to USB device tree
+    let media_name = result.get("disk_info")
+        .and_then(|d| d.get("media_name"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    
+    let mut found_device_info = false;
+    
+    // 3a. Check for SD Card Reader first (built-in card readers have exact bsd_name match)
+    let sd_cmd = "system_profiler SPCardReaderDataType -json 2>/dev/null";
+    if let Ok(output) = Command::new("sh").args(["-c", sd_cmd]).output() {
         if let Ok(json_data) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-            // Parse USB device tree to find our device
-            if let Some(usb_info) = find_usb_device_info(&json_data, &disk_id) {
-                result["usb_info"] = usb_info;
+            if let Some(sd_info) = find_sd_card_info(&json_data, &disk_id) {
+                // Found SD card - use this info
+                found_device_info = true;
+                
+                // Extract SMART status for SD cards and create smart_info section
+                if let Some(smart_status) = sd_info.get("smart_status").and_then(|s| s.as_str()) {
+                    let mut smart_info = serde_json::Map::new();
+                    let status_formatted = if smart_status == "Verified" {
+                        "Verified ✅".to_string()
+                    } else if smart_status == "Failing" {
+                        "FAILING ⚠️".to_string()
+                    } else {
+                        smart_status.to_string()
+                    };
+                    smart_info.insert("health_status".to_string(), serde_json::json!(status_formatted));
+                    smart_info.insert("smart_supported".to_string(), serde_json::json!(true));
+                    
+                    // Add device info to smart_info
+                    if let Some(product) = sd_info.get("product_name").and_then(|p| p.as_str()) {
+                        smart_info.insert("device_model".to_string(), serde_json::json!(product));
+                    }
+                    if let Some(model) = sd_info.get("card_model").and_then(|m| m.as_str()) {
+                        smart_info.insert("model_family".to_string(), serde_json::json!(model));
+                    }
+                    if let Some(mfr) = sd_info.get("manufacturer").and_then(|m| m.as_str()) {
+                        smart_info.insert("manufacturer".to_string(), serde_json::json!(mfr));
+                    }
+                    if let Some(serial) = sd_info.get("serial_number").and_then(|s| s.as_str()) {
+                        smart_info.insert("serial_number".to_string(), serde_json::json!(serial));
+                    }
+                    if let Some(capacity) = sd_info.get("capacity").and_then(|c| c.as_str()) {
+                        smart_info.insert("capacity".to_string(), serde_json::json!(capacity));
+                    }
+                    if let Some(spec) = sd_info.get("sd_spec_version").and_then(|s| s.as_str()) {
+                        smart_info.insert("sd_spec_version".to_string(), serde_json::json!(format!("SD {}", spec)));
+                    }
+                    if let Some(date) = sd_info.get("manufacturing_date").and_then(|d| d.as_str()) {
+                        smart_info.insert("manufacturing_date".to_string(), serde_json::json!(date));
+                    }
+                    
+                    result["smart_info"] = serde_json::json!(smart_info);
+                }
+                result["usb_info"] = sd_info;
+                
+                // Remove misleading smart_status from disk_info for SD cards
+                // (diskutil says "Not Supported" but Card Reader has its own health check)
+                if let Some(disk_info) = result.get_mut("disk_info") {
+                    if let Some(obj) = disk_info.as_object_mut() {
+                        obj.remove("smart_status");
+                    }
+                }
+            }
+        }
+    }
+    
+    // 3b. If not an SD card, check USB device tree
+    if !found_device_info {
+        let usb_cmd = "system_profiler SPUSBHostDataType -json 2>/dev/null";
+        if let Ok(output) = Command::new("sh").args(["-c", usb_cmd]).output() {
+            if let Ok(json_data) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                // Parse USB device tree to find our specific device by name
+                if let Some(usb_info) = find_usb_device_info(&json_data, &disk_id, &media_name) {
+                    result["usb_info"] = usb_info;
+                }
             }
         }
     }
@@ -2742,38 +3419,132 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
         }
     }
     
-    // 16. Check for SMART support (usually not on USB, but worth trying)
-    let smart_cmd = format!(
-        "smartctl -i /dev/{} 2>/dev/null | head -20",
-        disk_id
-    );
-    if let Ok(output) = Command::new("sh").args(["-c", &smart_cmd]).output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.contains("Device Model") || stdout.contains("Vendor") {
-            let mut smart_info = serde_json::Map::new();
-            for line in stdout.lines() {
-                if let Some((key, value)) = line.split_once(':') {
-                    let key = key.trim();
-                    let value = value.trim();
-                    if !value.is_empty() {
-                        match key {
-                            "Device Model" => { smart_info.insert("device_model".to_string(), serde_json::json!(value)); },
-                            "Serial Number" => { smart_info.insert("serial_number".to_string(), serde_json::json!(value)); },
-                            "Firmware Version" => { smart_info.insert("firmware_version".to_string(), serde_json::json!(value)); },
-                            "User Capacity" => { smart_info.insert("capacity".to_string(), serde_json::json!(value)); },
-                            "Sector Size" => { smart_info.insert("sector_size".to_string(), serde_json::json!(value)); },
-                            "Rotation Rate" => { smart_info.insert("rotation_rate".to_string(), serde_json::json!(value)); },
-                            "Form Factor" => { smart_info.insert("form_factor".to_string(), serde_json::json!(value)); },
-                            "SMART support is" => { smart_info.insert("smart_supported".to_string(), serde_json::json!(value)); },
-                            _ => {}
-                        }
-                    }
+    // 16. Check for SMART support and collect comprehensive SMART data using try_smartctl
+    // Get parent disk for SMART (e.g., "disk6" instead of "disk6s2")
+    let smart_disk_id = result.get("disk_info")
+        .and_then(|d| d.get("parent_disk"))
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            // Fallback: strip partition suffix (e.g., "disk6s2" -> "disk6")
+            if let Some(pos) = disk_id.find('s') {
+                let after_s = &disk_id[pos+1..];
+                if !after_s.is_empty() && after_s.chars().all(|c| c.is_ascii_digit()) {
+                    return disk_id[..pos].to_string();
                 }
             }
-            if !smart_info.is_empty() {
-                result["smart_info"] = serde_json::json!(smart_info);
-            }
+            disk_id.to_string()
+        });
+    
+    eprintln!("[SMART Debug] forensic_analysis: disk_id={}, smart_disk_id={}", disk_id, smart_disk_id);
+    
+    // Use try_smartctl for comprehensive SMART data (includes -x extended info)
+    if let Some(smart_data) = try_smartctl(&smart_disk_id) {
+        eprintln!("[SMART Debug] try_smartctl returned data, available={}", smart_data.available);
+        
+        let mut smart_info = serde_json::Map::new();
+        
+        // Device identification
+        if let Some(v) = &smart_data.model_family { smart_info.insert("model_family".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.device_model { smart_info.insert("device_model".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.serial_number { smart_info.insert("serial_number".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.firmware_version { smart_info.insert("firmware_version".to_string(), serde_json::json!(v)); }
+        
+        // Capacity and physical info
+        if let Some(v) = smart_data.user_capacity_bytes { 
+            let gb = v as f64 / 1_000_000_000.0;
+            smart_info.insert("capacity".to_string(), serde_json::json!(format!("{:.2} GB ({} bytes)", gb, v))); 
         }
+        if let Some(v) = smart_data.logical_block_size { smart_info.insert("logical_block_size".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.physical_block_size { smart_info.insert("physical_block_size".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.rotation_rate { smart_info.insert("rotation_rate".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.form_factor { smart_info.insert("form_factor".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.device_type { smart_info.insert("device_type".to_string(), serde_json::json!(v)); }
+        
+        // Interface info
+        if let Some(v) = &smart_data.protocol { smart_info.insert("protocol".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.ata_version { smart_info.insert("ata_version".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.sata_version { smart_info.insert("sata_version".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.interface_speed_max { smart_info.insert("interface_speed_max".to_string(), serde_json::json!(v)); }
+        if let Some(v) = &smart_data.interface_speed_current { smart_info.insert("interface_speed_current".to_string(), serde_json::json!(v)); }
+        
+        // Health status
+        smart_info.insert("health_status".to_string(), serde_json::json!(&smart_data.health_status));
+        if let Some(v) = smart_data.smart_enabled { smart_info.insert("smart_enabled".to_string(), serde_json::json!(v)); }
+        
+        // Capabilities
+        if let Some(v) = smart_data.trim_supported { smart_info.insert("trim_supported".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.write_cache_enabled { smart_info.insert("write_cache_enabled".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.read_lookahead_enabled { smart_info.insert("read_lookahead_enabled".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.ata_security_enabled { smart_info.insert("ata_security_enabled".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.ata_security_frozen { smart_info.insert("ata_security_frozen".to_string(), serde_json::json!(v)); }
+        
+        // Temperature info (SCT)
+        if let Some(v) = smart_data.sct_temperature_current { smart_info.insert("sct_temperature_current".to_string(), serde_json::json!(format!("{}°C", v))); }
+        if let Some(v) = smart_data.sct_temperature_lifetime_min { smart_info.insert("sct_temperature_lifetime_min".to_string(), serde_json::json!(format!("{}°C", v))); }
+        if let Some(v) = smart_data.sct_temperature_lifetime_max { smart_info.insert("sct_temperature_lifetime_max".to_string(), serde_json::json!(format!("{}°C", v))); }
+        if let Some(v) = smart_data.sct_temperature_op_limit { smart_info.insert("sct_temperature_op_limit".to_string(), serde_json::json!(format!("{}°C", v))); }
+        
+        // Usage stats (from temperature if available, or direct)
+        if let Some(v) = &smart_data.temperature { smart_info.insert("temperature".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.power_on_hours { 
+            let days = v / 24;
+            let hours = v % 24;
+            smart_info.insert("power_on_hours".to_string(), serde_json::json!(format!("{} ({} Tage, {} Std.)", v, days, hours))); 
+        }
+        if let Some(v) = smart_data.power_cycle_count { smart_info.insert("power_cycle_count".to_string(), serde_json::json!(v)); }
+        
+        // Self-test info
+        if let Some(v) = &smart_data.self_test_status { smart_info.insert("self_test_status".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.self_test_short_minutes { smart_info.insert("self_test_short_minutes".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.self_test_extended_minutes { smart_info.insert("self_test_extended_minutes".to_string(), serde_json::json!(v)); }
+        
+        // Error logs
+        if let Some(v) = smart_data.error_log_count { smart_info.insert("error_log_count".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.self_test_log_count { smart_info.insert("self_test_log_count".to_string(), serde_json::json!(v)); }
+        
+        // SSD-specific
+        if let Some(v) = smart_data.endurance_used_percent { smart_info.insert("endurance_used_percent".to_string(), serde_json::json!(format!("{}%", v))); }
+        if let Some(v) = smart_data.spare_available_percent { smart_info.insert("spare_available_percent".to_string(), serde_json::json!(format!("{}%", v))); }
+        
+        // Data transfer stats
+        if let Some(v) = smart_data.total_lbas_written { 
+            let tb = (v as f64 * 512.0) / 1_000_000_000_000.0;
+            smart_info.insert("total_data_written".to_string(), serde_json::json!(format!("{:.2} TB", tb))); 
+        }
+        if let Some(v) = smart_data.total_lbas_read { 
+            let tb = (v as f64 * 512.0) / 1_000_000_000_000.0;
+            smart_info.insert("total_data_read".to_string(), serde_json::json!(format!("{:.2} TB", tb))); 
+        }
+        
+        // Sector health
+        if let Some(v) = smart_data.reallocated_sectors { smart_info.insert("reallocated_sectors".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.pending_sectors { smart_info.insert("pending_sectors".to_string(), serde_json::json!(v)); }
+        if let Some(v) = smart_data.uncorrectable_sectors { smart_info.insert("uncorrectable_sectors".to_string(), serde_json::json!(v)); }
+        
+        // Full SMART attributes table
+        if !smart_data.attributes.is_empty() {
+            let attrs: Vec<serde_json::Value> = smart_data.attributes.iter().map(|a| {
+                serde_json::json!({
+                    "id": a.id,
+                    "name": a.name,
+                    "value": a.value,
+                    "worst": a.worst,
+                    "threshold": a.threshold,
+                    "raw_value": a.raw_value,
+                    "flags": a.flags,
+                    "prefailure": a.prefailure
+                })
+            }).collect();
+            smart_info.insert("attributes_table".to_string(), serde_json::json!(attrs));
+        }
+        
+        smart_info.insert("source".to_string(), serde_json::json!(&smart_data.source));
+        smart_info.insert("smart_supported".to_string(), serde_json::json!(smart_data.available));
+        
+        result["smart_info"] = serde_json::json!(smart_info);
+    } else {
+        eprintln!("[SMART Debug] try_smartctl returned None - SMART not available for {}", smart_disk_id);
     }
     
     // 17. Calculate checksums of first sector
@@ -2807,69 +3578,321 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
 }
 
 /// Find USB device info from system_profiler JSON
-fn find_usb_device_info(json_data: &serde_json::Value, disk_id: &str) -> Option<serde_json::Value> {
-    fn search_devices(items: &serde_json::Value, disk_id: &str) -> Option<serde_json::Value> {
-        if let Some(array) = items.as_array() {
-            for item in array {
-                // Check if this device has a Media entry matching our disk
-                if let Some(media) = item.get("Media") {
-                    if let Some(media_arr) = media.as_array() {
-                        for m in media_arr {
-                            if let Some(bsd) = m.get("bsd_name").and_then(|b| b.as_str()) {
-                                if bsd == disk_id || disk_id.starts_with(bsd) {
-                                    let mut info = serde_json::Map::new();
-                                    if let Some(name) = item.get("_name").and_then(|n| n.as_str()) {
-                                        info.insert("product_name".to_string(), serde_json::json!(name));
-                                    }
-                                    if let Some(manufacturer) = item.get("manufacturer").and_then(|m| m.as_str()) {
-                                        info.insert("manufacturer".to_string(), serde_json::json!(manufacturer));
-                                    }
-                                    if let Some(vendor_id) = item.get("vendor_id").and_then(|v| v.as_str()) {
-                                        info.insert("vendor_id".to_string(), serde_json::json!(vendor_id));
-                                    }
-                                    if let Some(product_id) = item.get("product_id").and_then(|p| p.as_str()) {
-                                        info.insert("product_id".to_string(), serde_json::json!(product_id));
-                                    }
-                                    if let Some(serial) = item.get("serial_num").and_then(|s| s.as_str()) {
-                                        info.insert("serial_number".to_string(), serde_json::json!(serial));
-                                    }
-                                    if let Some(speed) = item.get("device_speed").and_then(|s| s.as_str()) {
-                                        info.insert("usb_speed".to_string(), serde_json::json!(speed));
-                                    }
-                                    if let Some(version) = item.get("bcd_device").and_then(|v| v.as_str()) {
-                                        info.insert("device_version".to_string(), serde_json::json!(version));
-                                    }
-                                    if let Some(bus_power) = item.get("bus_power").and_then(|b| b.as_str()) {
-                                        info.insert("bus_power_ma".to_string(), serde_json::json!(bus_power));
-                                    }
-                                    if let Some(bus_power_used) = item.get("bus_power_used").and_then(|b| b.as_str()) {
-                                        info.insert("bus_power_used_ma".to_string(), serde_json::json!(bus_power_used));
-                                    }
-                                    if let Some(extra_current) = item.get("extra_current_used").and_then(|e| e.as_str()) {
-                                        info.insert("extra_current_ma".to_string(), serde_json::json!(extra_current));
-                                    }
-                                    return Some(serde_json::json!(info));
+/// USB Vendor ID to Manufacturer name lookup (USB-IF official registry)
+fn usb_vendor_lookup(vendor_id: &str) -> Option<&'static str> {
+    // Common USB flash drive and storage device vendors
+    // Full list: https://usb-ids.gowdy.us/
+    match vendor_id.to_lowercase().as_str() {
+        "0x0781" => Some("SanDisk Corporation"),
+        "0x0951" => Some("Kingston Technology"),
+        "0x8564" => Some("Transcend Information"),
+        "0x058f" => Some("Alcor Micro Corp."),
+        "0x090c" => Some("Silicon Motion"),
+        "0x13fe" => Some("Phison Electronics"),
+        "0x1f75" => Some("Innostor Technology"),
+        "0x0bda" => Some("Realtek Semiconductor"),
+        "0x1908" => Some("GEMBIRD"),
+        "0x0930" => Some("Toshiba Corporation"),
+        "0x1b1c" => Some("Corsair"),
+        "0x154b" => Some("PNY Technologies"),
+        "0x18a5" => Some("Verbatim"),
+        "0x0dd8" => Some("Netac Technology"),
+        "0x1005" => Some("Apacer Technology"),
+        "0x04e8" => Some("Samsung Electronics"),
+        "0x0ea0" => Some("Ours Technology"),
+        "0x048d" => Some("Integrated Technology Express"),
+        "0x1307" => Some("USBest Technology"),
+        "0x05dc" => Some("Lexar Media"),
+        "0x3538" => Some("Power Quotient International"),
+        "0x0cf2" => Some("ENE Technology"),
+        "0x1e3d" => Some("Chipsbrand Technologies"),
+        // SATA-to-USB Bridge controllers
+        "0x174c" => Some("ASMedia Technology Inc."),
+        "0x152d" => Some("JMicron Technology Corp."),
+        "0x1058" => Some("Western Digital Technologies"),
+        "0x0bc2" => Some("Seagate Technology"),
+        "0x04fc" => Some("Sunplus Technology"),
+        "0x2109" => Some("VIA Labs Inc."),
+        "0x14cd" => Some("Super Top"),
+        "0x1bcf" => Some("Sunplus Innovation"),
+        "0x0080" => Some("Assmann Electronic"),
+        // External HDD/SSD vendors  
+        "0x0480" => Some("Toshiba America Inc."),
+        "0x07ab" => Some("Freecom Technologies"),
+        "0x059b" => Some("Iomega Corporation"),
+        "0x4971" => Some("SimpleTech"),
+        "0x067b" => Some("Prolific Technology"),
+        // Apple
+        "0x05ac" => Some("Apple Inc."),
+        // Common peripheral vendors
+        "0x046d" => Some("Logitech Inc."),
+        "0x045e" => Some("Microsoft Corporation"),
+        "0x1d5c" => Some("Fresco Logic"),
+        "0x1a40" => Some("Terminus Technology Inc."),
+        "0x8087" => Some("Intel Corporation"),
+        "0x0b95" => Some("ASIX Electronics"),
+        "0x2357" => Some("TP-Link Technologies"),
+        "0x0fe6" => Some("ICS Advent"),
+        _ => None
+    }
+}
+
+/// SD Card Manufacturer ID lookup (SD Association standard)
+fn sd_manufacturer_lookup(manufacturer_id: &str) -> Option<&'static str> {
+    // SD Card Manufacturer IDs from SD Association
+    match manufacturer_id {
+        "0x01" | "0x1" | "1" => Some("Panasonic"),
+        "0x02" | "0x2" | "2" => Some("Toshiba"),
+        "0x03" | "0x3" | "3" => Some("SanDisk"),
+        "0x1b" | "27" => Some("Samsung"),
+        "0x1d" | "29" => Some("AData"),
+        "0x27" | "39" => Some("Phison"),
+        "0x28" | "40" => Some("Lexar"),
+        "0x31" | "49" => Some("Silicon Power"),
+        "0x41" | "65" => Some("Kingston"),
+        "0x45" | "69" => Some("TeamGroup"),
+        "0x74" | "116" => Some("Transcend"),
+        "0x76" | "118" => Some("Patriot"),
+        "0x82" | "130" => Some("Sony"),
+        "0x9c" | "156" => Some("Angelbird"),
+        "0x9f" | "159" => Some("Teclast"),
+        _ => None
+    }
+}
+
+/// Find SD Card info from SPCardReaderDataType JSON
+fn find_sd_card_info(json_data: &serde_json::Value, disk_id: &str) -> Option<serde_json::Value> {
+    if let Some(card_reader_data) = json_data.get("SPCardReaderDataType") {
+        if let Some(readers) = card_reader_data.as_array() {
+            for reader in readers {
+                // Get card reader info
+                let reader_vendor_id = reader.get("spcardreader_vendor-id")
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                let _reader_device_id = reader.get("spcardreader_device-id")
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                let link_speed = reader.get("spcardreader_link-speed")
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                
+                // Search in _items for cards
+                if let Some(items) = reader.get("_items") {
+                    if let Some(cards) = items.as_array() {
+                        for card in cards {
+                            let bsd_name = card.get("bsd_name").and_then(|b| b.as_str()).unwrap_or("");
+                            
+                            // Match by disk ID
+                            if bsd_name == disk_id || disk_id.starts_with(bsd_name) || bsd_name.starts_with(&disk_id.replace("s1", "").replace("s2", "")) {
+                                let mut info = serde_json::Map::new();
+                                
+                                // Card type and name
+                                if let Some(name) = card.get("_name").and_then(|n| n.as_str()) {
+                                    info.insert("product_name".to_string(), serde_json::json!(name));
                                 }
+                                
+                                // Product name from card
+                                if let Some(product) = card.get("spcardreader_card_productname").and_then(|p| p.as_str()) {
+                                    info.insert("card_model".to_string(), serde_json::json!(product));
+                                }
+                                
+                                // Manufacturer from ID lookup
+                                if let Some(mfr_id) = card.get("spcardreader_card_manufacturer-id").and_then(|m| m.as_str()) {
+                                    info.insert("manufacturer_id".to_string(), serde_json::json!(mfr_id));
+                                    if let Some(mfr_name) = sd_manufacturer_lookup(mfr_id) {
+                                        info.insert("manufacturer".to_string(), serde_json::json!(mfr_name));
+                                    }
+                                }
+                                
+                                // Serial number
+                                if let Some(serial) = card.get("spcardreader_card_serialnumber").and_then(|s| s.as_str()) {
+                                    info.insert("serial_number".to_string(), serde_json::json!(serial));
+                                }
+                                
+                                // Manufacturing date
+                                if let Some(date) = card.get("spcardreader_card_manufacturing_date").and_then(|d| d.as_str()) {
+                                    info.insert("manufacturing_date".to_string(), serde_json::json!(date));
+                                }
+                                
+                                // Product revision
+                                if let Some(rev) = card.get("spcardreader_card_productrevision").and_then(|r| r.as_str()) {
+                                    info.insert("device_version".to_string(), serde_json::json!(rev));
+                                }
+                                
+                                // SD spec version
+                                if let Some(spec) = card.get("spcardreader_card_specversion").and_then(|s| s.as_str()) {
+                                    info.insert("sd_spec_version".to_string(), serde_json::json!(spec));
+                                }
+                                
+                                // Size
+                                if let Some(size) = card.get("size").and_then(|s| s.as_str()) {
+                                    info.insert("capacity".to_string(), serde_json::json!(size));
+                                }
+                                
+                                // SMART status
+                                if let Some(smart) = card.get("smart_status").and_then(|s| s.as_str()) {
+                                    info.insert("smart_status".to_string(), serde_json::json!(smart));
+                                }
+                                
+                                // Card reader info
+                                if !link_speed.is_empty() {
+                                    info.insert("reader_link_speed".to_string(), serde_json::json!(link_speed));
+                                }
+                                if !reader_vendor_id.is_empty() {
+                                    info.insert("reader_vendor_id".to_string(), serde_json::json!(reader_vendor_id));
+                                }
+                                
+                                info.insert("hardware_type".to_string(), serde_json::json!("SD Card"));
+                                
+                                return Some(serde_json::json!(info));
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_usb_device_info(json_data: &serde_json::Value, _disk_id: &str, media_name: &str) -> Option<serde_json::Value> {
+    // SPUSBHostDataType uses different field names than SPUSBDataType
+    // We search recursively and match by media_name (e.g., "SanDisk 3.2Gen1")
+    
+    // Helper function to extract USB device info from an item
+    fn extract_device_info(item: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        let mut info = serde_json::Map::new();
+        
+        let device_name = item.get("_name").and_then(|n| n.as_str()).unwrap_or("").trim();
+        
+        // Product name
+        info.insert("product_name".to_string(), serde_json::json!(device_name));
+        
+        // Vendor ID and real manufacturer name from lookup
+        let vendor_id = item.get("USBDeviceKeyVendorID").and_then(|v| v.as_str()).unwrap_or("");
+        if !vendor_id.is_empty() {
+            info.insert("vendor_id".to_string(), serde_json::json!(vendor_id));
+            
+            // Look up the real manufacturer name from USB-IF registry
+            if let Some(real_manufacturer) = usb_vendor_lookup(vendor_id) {
+                info.insert("manufacturer".to_string(), serde_json::json!(real_manufacturer));
+            } else if let Some(vendor) = item.get("USBDeviceKeyVendorName").and_then(|v| v.as_str()) {
+                info.insert("manufacturer".to_string(), serde_json::json!(vendor.trim()));
+            }
+        } else if let Some(vendor) = item.get("USBDeviceKeyVendorName").and_then(|v| v.as_str()) {
+            info.insert("manufacturer".to_string(), serde_json::json!(vendor.trim()));
+        }
+        
+        // Product ID
+        if let Some(product_id) = item.get("USBDeviceKeyProductID").and_then(|p| p.as_str()) {
+            info.insert("product_id".to_string(), serde_json::json!(product_id));
+        }
+        
+        // Serial number
+        if let Some(serial) = item.get("USBDeviceKeySerialNumber").and_then(|s| s.as_str()) {
+            let serial_val = if serial == "Not Provided" { "" } else { serial };
+            if !serial_val.is_empty() {
+                info.insert("serial_number".to_string(), serde_json::json!(serial_val));
+            }
+        }
+        
+        // Link speed (e.g., "5 Gb/s", "480 Mb/s")
+        if let Some(speed) = item.get("USBDeviceKeyLinkSpeed").and_then(|s| s.as_str()) {
+            info.insert("usb_speed".to_string(), serde_json::json!(speed));
+        }
+        
+        // Product version
+        if let Some(version) = item.get("USBDeviceKeyProductVersion").and_then(|v| v.as_str()) {
+            info.insert("device_version".to_string(), serde_json::json!(version));
+        }
+        
+        // Power allocation (e.g., "4.48 W (896 mA)")
+        if let Some(power) = item.get("USBDeviceKeyPowerAllocation").and_then(|p| p.as_str()) {
+            info.insert("power_allocation".to_string(), serde_json::json!(power));
+        }
+        
+        // Location ID
+        if let Some(location) = item.get("USBKeyLocationID").and_then(|l| l.as_str()) {
+            info.insert("location_id".to_string(), serde_json::json!(location));
+        }
+        
+        // Hardware type
+        info.insert("hardware_type".to_string(), serde_json::json!("USB Storage Device"));
+        
+        info
+    }
+    
+    // Known USB-SATA bridge controller names
+    fn is_usb_sata_bridge(name: &str) -> bool {
+        let bridge_patterns = [
+            "ASM105", "ASM115", "ASM235", "ASM1351", "ASM1352", "ASM1153", // ASMedia
+            "JMS", "JMicron", // JMicron
+            "VL71", "VL716", // VIA Labs
+            "GL33", "GL35", // Genesys Logic
+            "RTL9210", // Realtek
+            "USB3.0", "USB 3.0", "SATA", // Generic patterns
+        ];
+        let name_upper = name.to_uppercase();
+        bridge_patterns.iter().any(|p| name_upper.contains(&p.to_uppercase()))
+    }
+    
+    fn search_devices(items: &serde_json::Value, media_name: &str, matched_device: &mut Option<serde_json::Value>, all_bridges: &mut Vec<serde_json::Map<String, serde_json::Value>>) {
+        if let Some(array) = items.as_array() {
+            for item in array {
+                // Check if this is a removable USB device
+                let is_removable = item.get("USBKeyHardwareType")
+                    .and_then(|h| h.as_str())
+                    .map(|s| s == "Removable")
+                    .unwrap_or(false);
+                
+                if is_removable {
+                    let device_name = item.get("_name").and_then(|n| n.as_str()).unwrap_or("").trim();
+                    
+                    // Check if this device matches our media_name
+                    let name_matches = !media_name.is_empty() && (
+                        device_name.contains(media_name) ||
+                        media_name.contains(device_name) ||
+                        device_name.trim().eq_ignore_ascii_case(media_name.trim()) ||
+                        (media_name.len() > 3 && device_name.to_lowercase().contains(&media_name[..media_name.len().min(8)].to_lowercase()))
+                    );
+                    
+                    if name_matches && matched_device.is_none() {
+                        let info = extract_device_info(item);
+                        *matched_device = Some(serde_json::json!(info));
+                        return;
+                    }
+                    
+                    // Collect USB-SATA bridges as potential candidates
+                    if is_usb_sata_bridge(device_name) {
+                        all_bridges.push(extract_device_info(item));
                     }
                 }
                 
                 // Recursively search in _items
                 if let Some(sub_items) = item.get("_items") {
-                    if let Some(found) = search_devices(sub_items, disk_id) {
-                        return Some(found);
+                    search_devices(sub_items, media_name, matched_device, all_bridges);
+                    if matched_device.is_some() {
+                        return;
                     }
                 }
             }
         }
-        None
     }
     
-    if let Some(usb_data) = json_data.get("SPUSBDataType") {
-        return search_devices(usb_data, disk_id);
+    let mut matched_device: Option<serde_json::Value> = None;
+    let mut all_bridges: Vec<serde_json::Map<String, serde_json::Value>> = Vec::new();
+    
+    if let Some(usb_data) = json_data.get("SPUSBHostDataType") {
+        search_devices(usb_data, media_name, &mut matched_device, &mut all_bridges);
     }
-    None
+    
+    // If no exact match found but we have USB-SATA bridges, return the first one
+    // This handles cases like Samsung SSD 870 EVO connected via ASM105X bridge
+    if matched_device.is_none() && !all_bridges.is_empty() {
+        // Use the first bridge, add a note that this is the USB controller
+        let mut bridge_info = all_bridges.remove(0);
+        bridge_info.insert("note".to_string(), serde_json::json!("USB-SATA Bridge Controller"));
+        return Some(serde_json::json!(bridge_info));
+    }
+    
+    matched_device
 }
 
 /// Analyze boot structure of the disk
@@ -2975,6 +3998,66 @@ except Exception as e:
 fn detect_filesystem_signatures(disk_id: &str, password: &str) -> Option<serde_json::Value> {
     let mut all_detected = Vec::new();
     let escaped_password = password.replace("'", "'\\''");
+    
+    // FIRST: Check the WHOLE DISK for ISO 9660 filesystem (hybrid ISO images write directly to disk)
+    // ISO 9660 "CD001" signature is at offset 0x8001 (32769 bytes)
+    // Note: Use /dev/diskX (not /dev/rdiskX) because raw device doesn't support seek properly
+    let iso_check_cmd = format!(
+        "echo '{}' | sudo -S dd if=/dev/{} bs=1 skip=32769 count=5 2>/dev/null | cat",
+        escaped_password, disk_id
+    );
+    if let Ok(output) = Command::new("sh").args(["-c", &iso_check_cmd]).output() {
+        let data = output.stdout;
+        if data.len() >= 5 && &data[0..5] == b"CD001" {
+            // Found ISO 9660! Now extract volume label and size
+            let mut iso_info = serde_json::Map::new();
+            iso_info.insert("type".to_string(), serde_json::json!("ISO 9660"));
+            
+            // Extract volume label (at offset 32808 = 0x8028, 32 bytes)
+            let label_cmd = format!(
+                "echo '{}' | sudo -S dd if=/dev/{} bs=1 skip=32808 count=32 2>/dev/null | tr -d '\\0' | xargs",
+                escaped_password, disk_id
+            );
+            if let Ok(label_output) = Command::new("sh").args(["-c", &label_cmd]).output() {
+                let label = String::from_utf8_lossy(&label_output.stdout).trim().to_string();
+                if !label.is_empty() {
+                    iso_info.insert("label".to_string(), serde_json::json!(label));
+                }
+            }
+            
+            // Extract volume size using Python to read the 4-byte little-endian value at offset 32848
+            let size_cmd = format!(
+                "echo '{}' | sudo -S python3 -c \"import os; f=os.open('/dev/{}', os.O_RDONLY); os.lseek(f, 32848, 0); d=os.read(f, 4); os.close(f); print(int.from_bytes(d, 'little') * 2048)\" 2>/dev/null",
+                escaped_password, disk_id
+            );
+            if let Ok(size_output) = Command::new("sh").args(["-c", &size_cmd]).output() {
+                let size_str = String::from_utf8_lossy(&size_output.stdout).trim().to_string();
+                if let Ok(iso_size) = size_str.parse::<u64>() {
+                    if iso_size > 0 {
+                        iso_info.insert("size_bytes".to_string(), serde_json::json!(iso_size));
+                        iso_info.insert("size_human".to_string(), serde_json::json!(format_bytes(iso_size)));
+                    }
+                }
+            }
+            
+            // Add the ISO detection with details
+            let iso_entry = if let Some(label) = iso_info.get("label").and_then(|v| v.as_str()) {
+                if let Some(size) = iso_info.get("size_human").and_then(|v| v.as_str()) {
+                    format!("ISO 9660 '{}' ({})", label, size)
+                } else {
+                    format!("ISO 9660 '{}'", label)
+                }
+            } else if let Some(size) = iso_info.get("size_human").and_then(|v| v.as_str()) {
+                format!("ISO 9660 ({})", size)
+            } else {
+                "ISO 9660".to_string()
+            };
+            all_detected.push(iso_entry);
+            
+            // Also store the full ISO info for later use
+            // Note: This will be returned as part of the filesystem_signatures
+        }
+    }
     
     // Get list of partitions for this disk
     let list_cmd = format!("diskutil list {} 2>/dev/null", disk_id);
@@ -3165,12 +4248,9 @@ except Exception as e:
         
         if let Ok(output) = Command::new("sh").args(["-c", &cmd]).output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let _stderr = String::from_utf8_lossy(&output.stderr);
             
-            // Debug: Log stderr output for filesystem detection
-            if !stderr.is_empty() {
-                eprintln!("[FS Detection {}] stderr: {}", part_id, stderr);
-            }
+            // Note: stderr output is ignored - some devices don't support raw reads
             
             for line in stdout.lines() {
                 if let Some((key, value)) = line.split_once(':') {
@@ -3190,10 +4270,25 @@ except Exception as e:
                             "FS_XFS" => "XFS",
                             _ => continue,
                         };
+                        
+                        // Check if this is an EFI partition (0xEF) - if so, label as EFI
+                        let mut final_fs_name = fs_name.to_string();
+                        if part_id != disk_id {
+                            // Check partition type
+                            let info_cmd = format!("diskutil info {} 2>/dev/null | grep 'Partition Type'", part_id);
+                            if let Ok(info_out) = Command::new("sh").args(["-c", &info_cmd]).output() {
+                                let info_str = String::from_utf8_lossy(&info_out.stdout);
+                                if info_str.contains("0xEF") || info_str.to_lowercase().contains("efi") {
+                                    // This is an EFI System Partition with FAT filesystem
+                                    final_fs_name = format!("EFI ({})", fs_name);
+                                }
+                            }
+                        }
+                        
                         let entry = if part_id == disk_id {
-                            fs_name.to_string()
+                            final_fs_name
                         } else {
-                            format!("{} ({})", fs_name, part_id)
+                            format!("{} ({})", final_fs_name, part_id)
                         };
                         if !all_detected.contains(&entry) {
                             all_detected.push(entry);

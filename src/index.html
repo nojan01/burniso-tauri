@@ -217,13 +217,13 @@
       </div>
 
       <!-- SMART Status Section (Collapsible) -->
-      <div class="section collapsible" id="smart-section">
+      <div class="section collapsible expanded" id="smart-section">
         <h3 class="collapsible-header" id="smart-header">
           <span class="collapse-icon">▶</span>
           💾 <span data-i18n="diagnose.smartStatus">S.M.A.R.T. Status</span>
           <span id="smart-status-badge" class="status-badge hidden"></span>
         </h3>
-        <div class="collapsible-content hidden" id="smart-content">
+        <div class="collapsible-content" id="smart-content">
           <div id="smart-container" class="smart-container">
             <div id="smart-loading" class="smart-loading hidden">
               <span class="spinner"></span> <span data-i18n="messages.loading">Lädt...</span>
@@ -233,36 +233,228 @@
               <span id="smart-unavailable-msg" data-i18n="diagnose.smartUnavailable">SMART-Daten nicht verfügbar</span>
             </div>
             <div id="smart-data" class="smart-data hidden">
+              <!-- Health Status -->
               <div class="smart-health-row">
                 <span class="smart-health-label" data-i18n="diagnose.healthStatus">Gesundheitsstatus:</span>
                 <span id="smart-health-value" class="smart-health-value">-</span>
               </div>
-              <div class="smart-details-grid">
-                <div class="smart-detail-item" id="smart-temp-item">
-                  <span class="smart-detail-label" data-i18n="diagnose.temperature">Temperatur:</span>
-                  <span id="smart-temp-value" class="smart-detail-value">-</span>
-                </div>
-                <div class="smart-detail-item" id="smart-hours-item">
-                  <span class="smart-detail-label" data-i18n="diagnose.powerOnHours">Betriebsstunden:</span>
-                  <span id="smart-hours-value" class="smart-detail-value">-</span>
-                </div>
-                <div class="smart-detail-item" id="smart-cycles-item">
-                  <span class="smart-detail-label" data-i18n="diagnose.powerCycles">Ein-/Ausschaltzyklen:</span>
-                  <span id="smart-cycles-value" class="smart-detail-value">-</span>
-                </div>
-                <div class="smart-detail-item" id="smart-reallocated-item">
-                  <span class="smart-detail-label" data-i18n="diagnose.reallocatedSectors">Umgemappte Sektoren:</span>
-                  <span id="smart-reallocated-value" class="smart-detail-value">-</span>
-                </div>
-                <div class="smart-detail-item" id="smart-pending-item">
-                  <span class="smart-detail-label" data-i18n="diagnose.pendingSectors">Wartende Sektoren:</span>
-                  <span id="smart-pending-value" class="smart-detail-value">-</span>
-                </div>
-                <div class="smart-detail-item" id="smart-uncorrectable-item">
-                  <span class="smart-detail-label" data-i18n="diagnose.uncorrectableSectors">Unkorrigierbare Sektoren:</span>
-                  <span id="smart-uncorrectable-value" class="smart-detail-value">-</span>
+              
+              <!-- Device Info Section -->
+              <div id="smart-device-info" class="smart-section-group">
+                <h4 class="smart-group-title">📦 Geräteinformationen</h4>
+                <div class="smart-details-grid">
+                  <div class="smart-detail-item" id="smart-model-family-item">
+                    <span class="smart-detail-label">Modellfamilie:</span>
+                    <span id="smart-model-family-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-device-model-item">
+                    <span class="smart-detail-label">Modell:</span>
+                    <span id="smart-device-model-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-serial-item">
+                    <span class="smart-detail-label">Seriennummer:</span>
+                    <span id="smart-serial-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-firmware-item">
+                    <span class="smart-detail-label">Firmware:</span>
+                    <span id="smart-firmware-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-capacity-item">
+                    <span class="smart-detail-label">Kapazität:</span>
+                    <span id="smart-capacity-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-form-factor-item">
+                    <span class="smart-detail-label">Formfaktor:</span>
+                    <span id="smart-form-factor-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-rotation-item">
+                    <span class="smart-detail-label">Typ:</span>
+                    <span id="smart-rotation-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-block-size-item">
+                    <span class="smart-detail-label">Blockgröße:</span>
+                    <span id="smart-block-size-value" class="smart-detail-value">-</span>
+                  </div>
                 </div>
               </div>
+              
+              <!-- Interface Info Section -->
+              <div id="smart-interface-info" class="smart-section-group">
+                <h4 class="smart-group-title">🔌 Schnittstelle</h4>
+                <div class="smart-details-grid">
+                  <div class="smart-detail-item" id="smart-protocol-item">
+                    <span class="smart-detail-label">Protokoll:</span>
+                    <span id="smart-protocol-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-ata-version-item">
+                    <span class="smart-detail-label">ATA Version:</span>
+                    <span id="smart-ata-version-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-sata-version-item">
+                    <span class="smart-detail-label">SATA Version:</span>
+                    <span id="smart-sata-version-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-speed-max-item">
+                    <span class="smart-detail-label">Max. Speed:</span>
+                    <span id="smart-speed-max-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-speed-current-item">
+                    <span class="smart-detail-label">Aktueller Speed:</span>
+                    <span id="smart-speed-current-value" class="smart-detail-value">-</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Capabilities Section -->
+              <div id="smart-capabilities-info" class="smart-section-group">
+                <h4 class="smart-group-title">⚙️ Funktionen</h4>
+                <div class="smart-details-grid smart-capabilities-grid">
+                  <div class="smart-detail-item smart-capability" id="smart-enabled-item">
+                    <span id="smart-enabled-value" class="smart-capability-badge">-</span>
+                    <span class="smart-detail-label">SMART</span>
+                  </div>
+                  <div class="smart-detail-item smart-capability" id="smart-trim-item">
+                    <span id="smart-trim-value" class="smart-capability-badge">-</span>
+                    <span class="smart-detail-label">TRIM</span>
+                  </div>
+                  <div class="smart-detail-item smart-capability" id="smart-write-cache-item">
+                    <span id="smart-write-cache-value" class="smart-capability-badge">-</span>
+                    <span class="smart-detail-label">Write Cache</span>
+                  </div>
+                  <div class="smart-detail-item smart-capability" id="smart-read-lookahead-item">
+                    <span id="smart-read-lookahead-value" class="smart-capability-badge">-</span>
+                    <span class="smart-detail-label">Read Look-ahead</span>
+                  </div>
+                  <div class="smart-detail-item smart-capability" id="smart-security-item">
+                    <span id="smart-security-value" class="smart-capability-badge">-</span>
+                    <span class="smart-detail-label">ATA Security</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Usage Stats Section -->
+              <div id="smart-usage-info" class="smart-section-group">
+                <h4 class="smart-group-title">📊 Nutzungsstatistik</h4>
+                <div class="smart-details-grid">
+                  <div class="smart-detail-item" id="smart-hours-item">
+                    <span class="smart-detail-label" data-i18n="diagnose.powerOnHours">Betriebsstunden:</span>
+                    <span id="smart-hours-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-cycles-item">
+                    <span class="smart-detail-label" data-i18n="diagnose.powerCycles">Ein-/Ausschaltzyklen:</span>
+                    <span id="smart-cycles-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-lbas-written-item">
+                    <span class="smart-detail-label">Geschrieben (LBAs):</span>
+                    <span id="smart-lbas-written-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-lbas-read-item">
+                    <span class="smart-detail-label">Gelesen (LBAs):</span>
+                    <span id="smart-lbas-read-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-endurance-item">
+                    <span class="smart-detail-label">SSD Verschleiß:</span>
+                    <span id="smart-endurance-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-spare-item">
+                    <span class="smart-detail-label">Ersatzblöcke verfügbar:</span>
+                    <span id="smart-spare-value" class="smart-detail-value">-</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Temperature Section -->
+              <div id="smart-temperature-info" class="smart-section-group">
+                <h4 class="smart-group-title">🌡️ Temperatur</h4>
+                <div class="smart-details-grid">
+                  <div class="smart-detail-item" id="smart-temp-item">
+                    <span class="smart-detail-label" data-i18n="diagnose.temperature">Aktuell:</span>
+                    <span id="smart-temp-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-temp-min-item">
+                    <span class="smart-detail-label">Minimum (Lebensdauer):</span>
+                    <span id="smart-temp-min-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-temp-max-item">
+                    <span class="smart-detail-label">Maximum (Lebensdauer):</span>
+                    <span id="smart-temp-max-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-temp-limit-item">
+                    <span class="smart-detail-label">Betriebslimit:</span>
+                    <span id="smart-temp-limit-value" class="smart-detail-value">-</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Health Details Section -->
+              <div id="smart-health-info" class="smart-section-group">
+                <h4 class="smart-group-title">🏥 Gesundheitsdetails</h4>
+                <div class="smart-details-grid">
+                  <div class="smart-detail-item" id="smart-reallocated-item">
+                    <span class="smart-detail-label" data-i18n="diagnose.reallocatedSectors">Umgemappte Sektoren:</span>
+                    <span id="smart-reallocated-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-pending-item">
+                    <span class="smart-detail-label" data-i18n="diagnose.pendingSectors">Wartende Sektoren:</span>
+                    <span id="smart-pending-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-uncorrectable-item">
+                    <span class="smart-detail-label" data-i18n="diagnose.uncorrectableSectors">Unkorrigierbare Sektoren:</span>
+                    <span id="smart-uncorrectable-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-error-log-item">
+                    <span class="smart-detail-label">Fehler-Log Einträge:</span>
+                    <span id="smart-error-log-value" class="smart-detail-value">-</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Self-Test Section -->
+              <div id="smart-selftest-info" class="smart-section-group">
+                <h4 class="smart-group-title">🧪 Selbsttest</h4>
+                <div class="smart-details-grid">
+                  <div class="smart-detail-item" id="smart-selftest-status-item">
+                    <span class="smart-detail-label">Letzter Test:</span>
+                    <span id="smart-selftest-status-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-selftest-short-item">
+                    <span class="smart-detail-label">Kurztest Dauer:</span>
+                    <span id="smart-selftest-short-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-selftest-extended-item">
+                    <span class="smart-detail-label">Langtest Dauer:</span>
+                    <span id="smart-selftest-extended-value" class="smart-detail-value">-</span>
+                  </div>
+                  <div class="smart-detail-item" id="smart-selftest-log-item">
+                    <span class="smart-detail-label">Test-Log Einträge:</span>
+                    <span id="smart-selftest-log-value" class="smart-detail-value">-</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Attributes Table -->
+              <div id="smart-attributes-section" class="smart-section-group hidden">
+                <h4 class="smart-group-title">📋 SMART Attribute</h4>
+                <div id="smart-attributes-container" class="smart-attributes-table-container">
+                  <table class="smart-attributes-table">
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>Attribut</th>
+                        <th>Wert</th>
+                        <th>Worst</th>
+                        <th>Thresh</th>
+                        <th>Raw</th>
+                        <th>Flags</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="smart-attributes-tbody">
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              
               <div id="smart-source" class="smart-source"></div>
               <div id="smart-warning" class="smart-warning hidden"></div>
             </div>
@@ -510,7 +702,7 @@
         <h3>📤 <span data-i18n="forensic.exportTitle">Report exportieren</span></h3>
         <div class="export-buttons">
           <button id="copy-forensic-btn" class="btn secondary">
-            📋 <span data-i18n="forensic.copyJson">JSON kopieren</span>
+            � <span data-i18n="forensic.saveJson">JSON speichern</span>
           </button>
 
           <button id="export-html-btn" class="btn secondary">

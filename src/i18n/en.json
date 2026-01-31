@@ -21,7 +21,7 @@
     "description": "Read-only – no data will be modified.",
     "startButton": "Start Forensic Analysis",
     "exportTitle": "Export Report",
-    "copyJson": "Copy JSON",
+    "saveJson": "Save JSON",
     "exportHtml": "Save as HTML",
     "log": "Log"
   },

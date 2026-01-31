@@ -21,7 +21,7 @@
     "description": "Nur lesend – keine Daten werden verändert.",
     "startButton": "Forensik-Analyse starten",
     "exportTitle": "Report exportieren",
-    "copyJson": "JSON kopieren",
+    "saveJson": "JSON speichern",
     "exportHtml": "Als HTML speichern",
     "log": "Protokoll"
   },

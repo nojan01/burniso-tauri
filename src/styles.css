@@ -828,6 +828,137 @@ body {
   border-color: #ff8a65;
 }
 
+/* Extended SMART Data Sections */
+.smart-section-group {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.smart-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 10px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.smart-capabilities-grid {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)) !important;
+}
+
+.smart-capability {
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.smart-capability-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+}
+
+.smart-capability-badge.enabled {
+  background: rgba(76, 175, 80, 0.2);
+  color: var(--accent-green);
+}
+
+.smart-capability-badge.disabled {
+  background: rgba(158, 158, 158, 0.2);
+  color: var(--text-secondary);
+}
+
+/* SMART Attributes Table */
+.smart-attributes-table-container {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+.smart-attributes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.smart-attributes-table th,
+.smart-attributes-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.smart-attributes-table th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.smart-attributes-table td {
+  font-family: 'SF Mono', Monaco, monospace;
+  color: var(--text-primary);
+}
+
+.smart-attributes-table tr:hover {
+  background: var(--bg-secondary);
+}
+
+.smart-attributes-table .attr-id {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.smart-attributes-table .attr-name {
+  font-family: inherit;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.smart-attributes-table .attr-status {
+  text-align: center;
+}
+
+.smart-attributes-table .attr-status.ok {
+  color: var(--accent-green);
+}
+
+.smart-attributes-table .attr-status.warning {
+  color: var(--accent-orange);
+  font-weight: 600;
+}
+
+.smart-attributes-table .attr-status.critical {
+  color: var(--accent-red);
+  font-weight: 600;
+}
+
+.smart-attributes-table .attr-prefailure {
+  color: var(--accent-orange);
+  font-size: 10px;
+}
+
+.smart-attributes-table .attr-flags {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.smart-attributes-table tr.prefailure-warning {
+  background-color: rgba(255, 165, 0, 0.15);
+}
+
+.smart-attributes-table tr.prefailure-warning td {
+  color: var(--accent-orange);
+}
+
 /* Collapsible Sections */
 .collapsible {
   border: 1px solid var(--border-color);
