@@ -578,6 +578,67 @@ fn check_smartctl_installed() -> bool {
     get_smartctl_path().is_some()
 }
 
+/// Check if e2fsprogs is installed (for ext2/3/4 label reading)
+fn get_e2fsprogs_path() -> Option<String> {
+    let paths = [
+        "/opt/homebrew/opt/e2fsprogs/sbin/e2label",  // Homebrew on Apple Silicon
+        "/usr/local/opt/e2fsprogs/sbin/e2label",     // Homebrew on Intel Mac
+        "/usr/local/sbin/e2label",                    // Manual install
+        "/usr/sbin/e2label",                          // System path
+    ];
+    
+    for path in paths {
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    
+    // Try which command as fallback
+    if let Ok(output) = Command::new("which").arg("e2label").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let path = stdout.trim();
+        if !path.is_empty() && std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    
+    None
+}
+
+/// Check all optional dependencies and return their status
+#[tauri::command]
+fn check_dependencies() -> serde_json::Value {
+    let paragon = check_paragon_drivers();
+    let smartctl = get_smartctl_path().is_some();
+    let e2fsprogs = get_e2fsprogs_path().is_some();
+    
+    // Check if Homebrew is installed
+    let homebrew_installed = std::path::Path::new("/opt/homebrew/bin/brew").exists()
+        || std::path::Path::new("/usr/local/bin/brew").exists();
+    
+    // Build missing packages list
+    let mut missing_brew_packages = Vec::new();
+    if !smartctl { missing_brew_packages.push("smartmontools"); }
+    if !e2fsprogs { missing_brew_packages.push("e2fsprogs"); }
+    
+    // Build install command
+    let install_command: Option<String> = if !missing_brew_packages.is_empty() {
+        Some(format!("brew install {}", missing_brew_packages.join(" ")))
+    } else {
+        None
+    };
+    
+    serde_json::json!({
+        "smartmontools": smartctl,
+        "e2fsprogs": e2fsprogs,
+        "paragon_ntfs": paragon.get("ntfs").and_then(|v| v.as_bool()).unwrap_or(false),
+        "paragon_extfs": paragon.get("extfs").and_then(|v| v.as_bool()).unwrap_or(false),
+        "homebrew": homebrew_installed,
+        "missing_brew_packages": missing_brew_packages,
+        "install_command": install_command
+    })
+}
+
 /// Get SMART data for a disk
 #[tauri::command]
 fn get_smart_data(disk_id: String) -> SmartData {
@@ -2898,6 +2959,94 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
                                     part_info.insert("free_space".to_string(), serde_json::json!(val.trim()));
                                 }
                             }
+                        }
+                    }
+                }
+                
+                // For Linux filesystems (ext2/3/4), try to read volume label using e2label or tune2fs
+                // This requires e2fsprogs to be installed (brew install e2fsprogs)
+                // Also detect Paragon UFSD_EXTFS driver which mounts ext2/3/4
+                let is_linux_fs = part_info.get("content_type")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c == "Linux Filesystem" || c == "0x83" || c.contains("Linux"))
+                    .unwrap_or(false)
+                    || part_info.get("partition_type")
+                        .and_then(|p| p.as_str())
+                        .map(|p| p == "0x83" || p == "Linux" || p.contains("Linux"))
+                        .unwrap_or(false)
+                    || part_info.get("filesystem")
+                        .and_then(|f| f.as_str())
+                        .map(|f| f.contains("ext") || f.contains("Linux") || f.contains("EXTFS") || f.contains("UFSD"))
+                        .unwrap_or(false);
+                
+                // Debug: Log what we detected for Linux FS
+                let content_type_str = part_info.get("content_type").and_then(|c| c.as_str()).unwrap_or("none");
+                let partition_type_str = part_info.get("partition_type").and_then(|p| p.as_str()).unwrap_or("none");
+                let filesystem_str = part_info.get("filesystem").and_then(|f| f.as_str()).unwrap_or("none");
+                eprintln!("[ext4 Debug] Partition {}: is_linux_fs={}, content_type={}, partition_type={}, filesystem={}", 
+                    partition_id, is_linux_fs, content_type_str, partition_type_str, filesystem_str);
+                
+                if is_linux_fs && !part_info.contains_key("volume_name") {
+                    eprintln!("[ext4 Debug] Trying to read ext4 label for {}", partition_id);
+                    
+                    // Try e2label first (simpler output) - needs sudo for raw disk access
+                    let e2label_cmd = format!(
+                        "echo '{}' | sudo -S /opt/homebrew/opt/e2fsprogs/sbin/e2label /dev/{} 2>/dev/null || echo '{}' | sudo -S /usr/local/opt/e2fsprogs/sbin/e2label /dev/{} 2>/dev/null",
+                        escaped_password, partition_id, escaped_password, partition_id
+                    );
+                    eprintln!("[ext4 Debug] Running e2label with sudo for {}", partition_id);
+                    
+                    if let Ok(label_output) = Command::new("sh").args(["-c", &e2label_cmd]).output() {
+                        let stdout = String::from_utf8_lossy(&label_output.stdout).trim().to_string();
+                        let stderr = String::from_utf8_lossy(&label_output.stderr).trim().to_string();
+                        eprintln!("[ext4 Debug] e2label stdout: '{}', stderr: '{}'", stdout, stderr);
+                        
+                        // Check if it's a valid label (not an error message)
+                        if !stdout.is_empty() && !stdout.contains("Permission denied") && !stdout.contains("Bad magic") && !stdout.contains("No such file") && !stdout.contains("Password:") {
+                            part_info.insert("volume_name".to_string(), serde_json::json!(stdout));
+                            eprintln!("[ext4 Debug] Set volume_name to: {}", stdout);
+                        }
+                    }
+                    
+                    // If e2label didn't work, try tune2fs
+                    if !part_info.contains_key("volume_name") {
+                        eprintln!("[ext4 Debug] e2label didn't work, trying tune2fs");
+                        let tune2fs_cmd = format!(
+                            "echo '{}' | sudo -S /opt/homebrew/opt/e2fsprogs/sbin/tune2fs -l /dev/{} 2>/dev/null | grep 'Filesystem volume name' || echo '{}' | sudo -S /usr/local/opt/e2fsprogs/sbin/tune2fs -l /dev/{} 2>/dev/null | grep 'Filesystem volume name'",
+                            escaped_password, partition_id, escaped_password, partition_id
+                        );
+                        eprintln!("[ext4 Debug] Running tune2fs with sudo for {}", partition_id);
+                        
+                        if let Ok(tune_output) = Command::new("sh").args(["-c", &tune2fs_cmd]).output() {
+                            let tune_stdout = String::from_utf8_lossy(&tune_output.stdout);
+                            let tune_stderr = String::from_utf8_lossy(&tune_output.stderr);
+                            eprintln!("[ext4 Debug] tune2fs stdout: '{}', stderr: '{}'", tune_stdout.trim(), tune_stderr.trim());
+                            
+                            // Parse "Filesystem volume name:   <volume_label>"
+                            if let Some(line) = tune_stdout.lines().find(|l| l.contains("Filesystem volume name")) {
+                                if let Some(label) = line.split(':').nth(1) {
+                                    let label = label.trim();
+                                    eprintln!("[ext4 Debug] Parsed label: '{}'", label);
+                                    if !label.is_empty() && label != "<none>" {
+                                        part_info.insert("volume_name".to_string(), serde_json::json!(label));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If still no volume name and partition is mounted, use mount point name
+                    if !part_info.contains_key("volume_name") {
+                        eprintln!("[ext4 Debug] No volume_name found, checking mount point");
+                        let mount_point_name = part_info.get("mount_point")
+                            .and_then(|m| m.as_str())
+                            .and_then(|mp| mp.rsplit('/').next())
+                            .filter(|name| !name.is_empty())
+                            .map(|s| s.to_string());
+                        
+                        if let Some(name) = mount_point_name {
+                            eprintln!("[ext4 Debug] Using mount point name: {}", name);
+                            part_info.insert("volume_name".to_string(), serde_json::json!(name));
                         }
                     }
                 }
@@ -5319,6 +5468,7 @@ pub fn run() {
             get_smart_data,
             check_smartctl_installed,
             check_paragon_drivers,
+            check_dependencies,
             write_text_file,
             format_disk,
             repair_disk,

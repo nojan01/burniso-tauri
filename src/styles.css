@@ -645,6 +645,65 @@ body {
   margin: 4px 0 0 0;
 }
 
+/* Dependencies Banner */
+.dependencies-banner {
+  background: linear-gradient(135deg, #1a3a5c 0%, #0d2840 100%);
+  border: 1px solid var(--accent-blue);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.dependencies-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dependencies-icon {
+  font-size: 24px;
+}
+
+.dependencies-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 150px;
+}
+
+.dependencies-text strong {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.dependencies-text span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.dependencies-command {
+  background: var(--bg-primary);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+  color: var(--accent-green);
+  border: 1px solid var(--border-color);
+  user-select: all;
+}
+
+.dependencies-banner .btn.small {
+  padding: 6px 10px;
+  font-size: 14px;
+  min-width: auto;
+}
+
+[data-theme="light"] .dependencies-banner {
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+}
+
 /* Stats Grid for Diagnose Tab */
 .stats-grid {
   display: grid;

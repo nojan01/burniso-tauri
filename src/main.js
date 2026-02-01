@@ -11,6 +11,73 @@ document.addEventListener('DOMContentLoaded', async () => {
   const { listen } = window.__TAURI__.event;
   const { open, save } = window.__TAURI__.dialog;
   const { getCurrentWindow, ProgressBarStatus } = window.__TAURI__.window;
+  
+  // Clipboard helper - use native API as fallback
+  async function copyToClipboard(text) {
+    try {
+      if (window.__TAURI__?.clipboard?.writeText) {
+        await window.__TAURI__.clipboard.writeText(text);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+      return true;
+    } catch (e) {
+      console.log('Clipboard error:', e);
+      return false;
+    }
+  }
+
+  // Check dependencies and show banner if needed
+  async function checkAndShowDependencies() {
+    try {
+      // Check if user dismissed the banner before
+      const dismissed = localStorage.getItem('dependenciesBannerDismissed');
+      if (dismissed) return;
+      
+      const deps = await invoke('check_dependencies');
+      console.log('Dependencies check:', deps);
+      
+      if (deps.install_command) {
+        const banner = document.getElementById('dependencies-banner');
+        const command = document.getElementById('dependencies-command');
+        const copyBtn = document.getElementById('dependencies-copy-btn');
+        const dismissBtn = document.getElementById('dependencies-dismiss-btn');
+        const message = document.getElementById('dependencies-message');
+        
+        command.textContent = deps.install_command;
+        
+        // Update message with missing packages
+        const missing = deps.missing_brew_packages || [];
+        if (missing.length > 0) {
+          const packageNames = missing.join(', ');
+          const lang = window.i18n.currentLang;
+          message.textContent = lang === 'de' 
+            ? `Fehlende Pakete: ${packageNames}` 
+            : `Missing packages: ${packageNames}`;
+        }
+        
+        banner.classList.remove('hidden');
+        
+        copyBtn.addEventListener('click', async () => {
+          const success = await copyToClipboard(deps.install_command);
+          if (success) {
+            copyBtn.textContent = '✓';
+            setTimeout(() => { copyBtn.textContent = '📋'; }, 2000);
+          }
+        });
+        
+        dismissBtn.addEventListener('click', () => {
+          banner.classList.add('hidden');
+          localStorage.setItem('dependenciesBannerDismissed', 'true');
+        });
+      }
+    } catch (e) {
+      console.log('Dependencies check error:', e);
+    }
+  }
+  
+  // Check dependencies on startup
+  checkAndShowDependencies();
 
   // Dock progress helper (macOS dock icon progress bar)
   const appWindow = getCurrentWindow();
@@ -1405,9 +1472,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       // Source info
       if (data.source === 'smartctl') {
-        smartSource.textContent = 'Datenquelle: smartmontools (smartctl -x)';
+        smartSource.textContent = t('tools.smartSourceSmartctl');
       } else if (data.source === 'diskutil') {
-        smartSource.textContent = 'Datenquelle: macOS diskutil (eingeschränkt)';
+        smartSource.textContent = t('tools.smartSourceDiskutil');
       }
       
       // Show warning if there's additional info
@@ -1635,15 +1702,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       // Log driver status
       if (drivers.ntfs) {
-        logTools('✓ Paragon NTFS erkannt - NTFS-Formatierung verfügbar', 'success');
+        logTools('✓ ' + t('tools.paragonNtfsInstalled'), 'success');
       } else {
-        logTools('ℹ️ Paragon NTFS nicht installiert - NTFS nicht verfügbar', 'info');
+        logTools('ℹ️ ' + t('tools.ntfsNotAvailable'), 'info');
       }
       
       if (drivers.extfs) {
-        logTools('✓ Paragon extFS erkannt - ext2/3/4-Formatierung verfügbar', 'success');
+        logTools('✓ ' + t('tools.paragonExtfsInstalled'), 'success');
       } else {
-        logTools('ℹ️ Paragon extFS nicht installiert - ext2/3/4 nicht verfügbar', 'info');
+        logTools('ℹ️ ' + t('tools.extfsNotAvailable'), 'info');
       }
       
     } catch (err) {
@@ -2051,16 +2118,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Paragon Drivers Section (if available)
       if (result.paragon_drivers) {
         html += '<div class="forensic-section">';
-        html += '<h5>🔧 ' + (t('tools.forensicParagonDrivers') || 'Paragon-Treiber') + '</h5>';
+        html += '<h5>🔧 ' + t('tools.forensicParagonDrivers') + '</h5>';
         html += '<div class="forensic-grid">';
-        html += '<div class="forensic-item"><span class="forensic-label">NTFS:</span> <span class="forensic-value ' + (result.paragon_drivers.ntfs ? 'success' : 'warning') + '">' + (result.paragon_drivers.ntfs ? '✓ Installiert' : '✗ Nicht installiert') + '</span></div>';
-        html += '<div class="forensic-item"><span class="forensic-label">extFS (ext2/3/4):</span> <span class="forensic-value ' + (result.paragon_drivers.extfs ? 'success' : 'warning') + '">' + (result.paragon_drivers.extfs ? '✓ Installiert' : '✗ Nicht installiert') + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">NTFS:</span> <span class="forensic-value ' + (result.paragon_drivers.ntfs ? 'success' : 'warning') + '">' + (result.paragon_drivers.ntfs ? t('tools.installed') : t('tools.notInstalled')) + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">extFS (ext2/3/4):</span> <span class="forensic-value ' + (result.paragon_drivers.extfs ? 'success' : 'warning') + '">' + (result.paragon_drivers.extfs ? t('tools.installed') : t('tools.notInstalled')) + '</span></div>';
         html += '</div></div>';
       }
       
       // Device Info Section
       html += '<div class="forensic-section">';
-      html += '<h5>📱 ' + (t('tools.forensicDeviceInfo') || 'Geräteinformationen') + '</h5>';
+      html += '<h5>📱 ' + t('tools.forensicDeviceInfo') + '</h5>';
       html += '<div class="forensic-grid">';
       
       // Check if this is an SD Card (has SD Card info from card reader)
@@ -2070,8 +2137,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Skip smart_status from diskutil for SD Cards (we show card reader health status instead)
         if (isSDCard && key === 'smart_status') continue;
         
-        if (result.disk_info[key]) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + result.disk_info[key] + '</span></div>';
+        const value = result.disk_info[key];
+        // Skip "Not applicable" values from diskutil output
+        if (value && !String(value).includes('Not applicable')) {
+          html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + value + '</span></div>';
         }
       }
       html += '</div></div>';
@@ -2079,14 +2148,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Partitions Section - show all partitions with their filesystems
       if (result.partitions && Array.isArray(result.partitions) && result.partitions.length > 0) {
         html += '<div class="forensic-section">';
-        html += '<h5>💾 ' + (t('tools.forensicPartitions') || 'Partitionslayout') + ' (' + result.partitions.length + ')</h5>';
+        html += '<h5>💾 ' + t('tools.forensicPartitions') + ' (' + result.partitions.length + ')</h5>';
         
         result.partitions.forEach((partition, idx) => {
           const partId = partition.partition_id || `Partition ${idx + 1}`;
           const volName = partition.volume_name || '-';
           const fs = partition.filesystem || partition.partition_type || partition.content_type || '-';
           const size = partition.size || '-';
-          const mountPoint = partition.mount_point || (t('tools.notMounted') || 'Nicht gemountet');
+          const mountPoint = partition.mount_point || t('tools.notMounted');
           const apfsContainer = partition.apfs_container || null;
           const apfsVolumes = partition.apfs_volumes || [];
           
@@ -2094,8 +2163,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           html += '<strong style="color: #81c784;">📂 ' + partId + '</strong>';
           if (volName !== '-') html += ' - <span style="color: #4fc3f7;">' + volName + '</span>';
           html += '<div class="forensic-grid" style="margin-top: 8px;">';
-          html += '<div class="forensic-item"><span class="forensic-label">Dateisystem:</span> <span class="forensic-value">' + fs + '</span></div>';
-          html += '<div class="forensic-item"><span class="forensic-label">Größe:</span> <span class="forensic-value">' + size + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.filesystem') + ':</span> <span class="forensic-value">' + fs + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.size') + ':</span> <span class="forensic-value">' + size + '</span></div>';
           
           // Show APFS container info if present
           if (apfsContainer) {
@@ -2104,14 +2173,14 @@ document.addEventListener('DOMContentLoaded', async () => {
           
           // Show mount point for non-APFS or show volumes for APFS
           if (!apfsContainer) {
-            html += '<div class="forensic-item"><span class="forensic-label">Mount-Punkt:</span> <span class="forensic-value">' + mountPoint + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.mountPoint') + ':</span> <span class="forensic-value">' + mountPoint + '</span></div>';
           }
           
           if (partition.used_space) {
-            html += '<div class="forensic-item"><span class="forensic-label">Belegt:</span> <span class="forensic-value">' + partition.used_space + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.usedSpace') + ':</span> <span class="forensic-value">' + partition.used_space + '</span></div>';
           }
           if (partition.free_space) {
-            html += '<div class="forensic-item"><span class="forensic-label">Frei:</span> <span class="forensic-value">' + partition.free_space + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.freeSpace') + ':</span> <span class="forensic-value">' + partition.free_space + '</span></div>';
           }
           html += '</div>';
           
@@ -2122,7 +2191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             apfsVolumes.forEach((vol) => {
               const volId = vol.volume_id || '-';
               const volNameApfs = vol.name || '-';
-              const volMount = vol.mount_point || 'Nicht gemountet';
+              const volMount = vol.mount_point || t('tools.notMounted');
               const volUsed = vol.used || '-';
               const volFileVault = vol.filevault || '-';
               
@@ -2130,7 +2199,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               html += '<span style="color: #81c784;">📁 ' + volId + '</span> - <span style="color: #4fc3f7;">' + volNameApfs + '</span><br>';
               html += '<span class="forensic-label" style="font-size: 0.85em;">Mount:</span> <span class="forensic-value" style="font-size: 0.85em;">' + volMount + '</span>';
               if (volUsed !== '-') {
-                html += ' | <span class="forensic-label" style="font-size: 0.85em;">Belegt:</span> <span class="forensic-value" style="font-size: 0.85em;">' + volUsed + '</span>';
+                html += ' | <span class="forensic-label" style="font-size: 0.85em;">' + t('tools.usedSpace') + ':</span> <span class="forensic-value" style="font-size: 0.85em;">' + volUsed + '</span>';
               }
               if (volFileVault !== '-' && volFileVault !== 'No') {
                 html += ' | <span class="forensic-label" style="font-size: 0.85em;">FileVault:</span> <span class="forensic-value" style="font-size: 0.85em; color: #f44336;">' + volFileVault + '</span>';
@@ -2149,45 +2218,45 @@ document.addEventListener('DOMContentLoaded', async () => {
       // USB Info Section - properly format USB device objects
       if (result.usb_info && Object.keys(result.usb_info).length > 0) {
         html += '<div class="forensic-section">';
-        html += '<h5>🔌 ' + (t('tools.forensicUsbInfo') || 'USB-Geräteinformationen') + '</h5>';
+        html += '<h5>🔌 ' + t('tools.forensicUsbInfo') + '</h5>';
         html += '<div class="forensic-grid">';
         
         // Check if usb_info contains a devices array
         if (result.usb_info.devices && Array.isArray(result.usb_info.devices)) {
           result.usb_info.devices.forEach((device, idx) => {
             html += '<div class="forensic-usb-device" style="border: 1px solid #444; padding: 10px; margin: 5px 0; border-radius: 6px; background: rgba(0,0,0,0.2);">';
-            html += '<strong style="color: #4fc3f7;">📱 Gerät ' + (idx + 1) + ': ' + (device.product_name || 'Unbekannt') + '</strong><br>';
-            if (device.manufacturer) html += '<span class="forensic-label">Hersteller:</span> <span class="forensic-value">' + device.manufacturer + '</span><br>';
+            html += '<strong style="color: #4fc3f7;">📱 ' + t('tools.device') + ' ' + (idx + 1) + ': ' + (device.product_name || t('tools.unknown')) + '</strong><br>';
+            if (device.manufacturer) html += '<span class="forensic-label">' + t('tools.manufacturer') + ':</span> <span class="forensic-value">' + device.manufacturer + '</span><br>';
             if (device.vendor_id) html += '<span class="forensic-label">Vendor ID:</span> <span class="forensic-value" style="font-family: monospace;">' + device.vendor_id + '</span><br>';
             if (device.product_id) html += '<span class="forensic-label">Product ID:</span> <span class="forensic-value" style="font-family: monospace;">' + device.product_id + '</span><br>';
-            if (device.serial_number) html += '<span class="forensic-label">Seriennummer:</span> <span class="forensic-value" style="font-family: monospace; font-size: 11px;">' + device.serial_number + '</span><br>';
-            if (device.usb_speed) html += '<span class="forensic-label">USB-Geschwindigkeit:</span> <span class="forensic-value" style="color: #4caf50;">' + device.usb_speed + '</span><br>';
-            if (device.power_allocation) html += '<span class="forensic-label">Stromverbrauch:</span> <span class="forensic-value">' + device.power_allocation + '</span><br>';
-            if (device.device_version) html += '<span class="forensic-label">Geräteversion:</span> <span class="forensic-value">' + device.device_version + '</span><br>';
+            if (device.serial_number) html += '<span class="forensic-label">' + t('tools.serialNumber') + ':</span> <span class="forensic-value" style="font-family: monospace; font-size: 11px;">' + device.serial_number + '</span><br>';
+            if (device.usb_speed) html += '<span class="forensic-label">' + t('tools.usbSpeed') + ':</span> <span class="forensic-value" style="color: #4caf50;">' + device.usb_speed + '</span><br>';
+            if (device.power_allocation) html += '<span class="forensic-label">' + t('tools.powerConsumption') + ':</span> <span class="forensic-value">' + device.power_allocation + '</span><br>';
+            if (device.device_version) html += '<span class="forensic-label">' + t('tools.deviceVersion') + ':</span> <span class="forensic-value">' + device.device_version + '</span><br>';
             if (device.location_id) html += '<span class="forensic-label">Location ID:</span> <span class="forensic-value" style="font-family: monospace;">' + device.location_id + '</span><br>';
             html += '</div>';
           });
         } else {
           // Single device or flat structure (USB or SD Card)
           const usbLabels = {
-            product_name: 'Produktname',
-            card_model: 'Kartenmodell',
-            manufacturer: 'Hersteller',
-            manufacturer_id: 'Hersteller-ID',
+            product_name: t('tools.productName'),
+            card_model: t('tools.cardModel'),
+            manufacturer: t('tools.manufacturer'),
+            manufacturer_id: t('tools.manufacturerId'),
             vendor_id: 'Vendor ID',
             product_id: 'Product ID',
-            serial_number: 'Seriennummer',
-            usb_speed: 'USB-Geschwindigkeit',
-            reader_link_speed: 'Card Reader Speed',
-            power_allocation: 'Stromverbrauch',
-            device_version: 'Geräteversion',
+            serial_number: t('tools.serialNumber'),
+            usb_speed: t('tools.usbSpeed'),
+            reader_link_speed: t('tools.readerSpeed'),
+            power_allocation: t('tools.powerConsumption'),
+            device_version: t('tools.deviceVersion'),
             location_id: 'Location ID',
-            hardware_type: 'Gerätetyp',
-            manufacturing_date: 'Herstellungsdatum',
-            sd_spec_version: 'SD-Spezifikation',
-            capacity: 'Kapazität',
+            hardware_type: t('tools.deviceType'),
+            manufacturing_date: t('tools.manufacturingDate'),
+            sd_spec_version: t('tools.sdSpecVersion'),
+            capacity: t('tools.capacity'),
             smart_status: 'SMART Status',
-            reader_vendor_id: 'Card Reader Vendor'
+            reader_vendor_id: t('tools.readerVendor')
           };
           for (let key in result.usb_info) {
             if (result.usb_info[key] && typeof result.usb_info[key] !== 'object') {
@@ -2202,7 +2271,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Partition Layout Section
       if (result.partition_layout) {
         html += '<div class="forensic-section">';
-        html += '<h5>💾 ' + (t('tools.forensicPartitions') || 'Partitionslayout') + '</h5>';
+        html += '<h5>💾 ' + t('tools.forensicPartitions') + '</h5>';
         html += '<div class="forensic-partitions">';
         if (Array.isArray(result.partition_layout)) {
           result.partition_layout.forEach((p, i) => {
@@ -2256,10 +2325,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else if (hasRealBootableMbr) {
           bootType = 'Legacy BIOS (MBR)';
         } else if (hasGpt && !hasEfi) {
-          bootType = 'GPT (keine EFI-Partition)';
+          bootType = 'GPT (' + t('tools.noEfiPartition') + ')';
         }
         
-        html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicBootable') || 'Bootfähig') + ':</span> <span class="forensic-value">' + (isBootable ? '✓ ' + bootType : '✗ ' + (bootType || 'Nicht bootfähig')) + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.forensicBootable') + ':</span> <span class="forensic-value">' + (isBootable ? '✓ ' + bootType : '✗ ' + (bootType || t('tools.notBootable'))) + '</span></div>';
         
         if (result.boot_info.is_iso9660) {
           html += '<div class="forensic-item"><span class="forensic-label">ISO 9660:</span> <span class="forensic-value">✓</span></div>';
@@ -2284,7 +2353,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const fsSignatures = result.filesystem_signatures?.detected_filesystems || result.filesystem_signatures;
       if (fsSignatures && (Array.isArray(fsSignatures) ? fsSignatures.length > 0 : true)) {
         html += '<div class="forensic-section">';
-        html += '<h5>📂 ' + (t('tools.forensicFilesystems') || 'Erkannte Dateisysteme') + '</h5>';
+        html += '<h5>📂 ' + t('tools.forensicFilesystems') + '</h5>';
         html += '<div class="forensic-filesystems">';
         
         if (Array.isArray(fsSignatures)) {
@@ -2316,13 +2385,13 @@ document.addEventListener('DOMContentLoaded', async () => {
           html += '<div class="forensic-item"><span class="forensic-label">Mount:</span> <span class="forensic-value">' + result.content_analysis.mount_point + '</span></div>';
         }
         if (result.content_analysis.total_items !== undefined) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicTotalItems') || 'Elemente') + ':</span> <span class="forensic-value">' + result.content_analysis.total_items + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.forensicTotalItems') + ':</span> <span class="forensic-value">' + result.content_analysis.total_items + '</span></div>';
         }
         if (result.content_analysis.detected_os && result.content_analysis.detected_os.length > 0) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + (t('tools.forensicDetectedOS') || 'Erkannte OS') + ':</span> <span class="forensic-value">' + result.content_analysis.detected_os.join(', ') + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.forensicDetectedOS') + ':</span> <span class="forensic-value">' + result.content_analysis.detected_os.join(', ') + '</span></div>';
         }
         if (result.content_analysis.top_level && result.content_analysis.top_level.length > 0) {
-          html += '<div class="forensic-item full-width"><span class="forensic-label">' + (t('tools.forensicTopLevel') || 'Hauptverzeichnis') + ':</span></div>';
+          html += '<div class="forensic-item full-width"><span class="forensic-label">' + t('tools.forensicTopLevel') + ':</span></div>';
           html += '<div class="forensic-toplevel">' + result.content_analysis.top_level.map(f => '<span class="toplevel-item">' + f + '</span>').join('') + '</div>';
         }
         html += '</div></div>';
@@ -2331,7 +2400,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Special Structures Section
       if (result.special_structures) {
         html += '<div class="forensic-section">';
-        html += '<h5>🔎 ' + (t('tools.forensicSpecial') || 'Spezialstrukturen') + '</h5>';
+        html += '<h5>🔎 ' + t('tools.forensicSpecial') + '</h5>';
         html += '<div class="forensic-grid">';
         for (let key in result.special_structures) {
           html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + (result.special_structures[key] ? '✓' : '✗') + '</span></div>';
@@ -2426,22 +2495,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Filesystem Details Section
       if (result.filesystem_details) {
         html += '<div class="forensic-section">';
-        html += '<h5>📁 ' + (t('tools.forensicFsDetails') || 'Dateisystem-Details') + '</h5>';
+        html += '<h5>📁 ' + t('tools.forensicFsDetails') + '</h5>';
         html += '<div class="forensic-grid">';
         if (result.filesystem_details.total_file_count) {
-          html += '<div class="forensic-item"><span class="forensic-label">Dateien:</span> <span class="forensic-value">' + result.filesystem_details.total_file_count + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('forensic.files') + ':</span> <span class="forensic-value">' + result.filesystem_details.total_file_count + '</span></div>';
         }
         if (result.filesystem_details.directory_count) {
-          html += '<div class="forensic-item"><span class="forensic-label">Ordner:</span> <span class="forensic-value">' + result.filesystem_details.directory_count + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.directories') + ':</span> <span class="forensic-value">' + result.filesystem_details.directory_count + '</span></div>';
         }
         if (result.filesystem_details.hidden_files_count) {
-          html += '<div class="forensic-item"><span class="forensic-label">Versteckte Dateien:</span> <span class="forensic-value">' + result.filesystem_details.hidden_files_count + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.hiddenFiles') + ':</span> <span class="forensic-value">' + result.filesystem_details.hidden_files_count + '</span></div>';
         }
         if (result.filesystem_details.symlink_count) {
           html += '<div class="forensic-item"><span class="forensic-label">Symlinks:</span> <span class="forensic-value">' + result.filesystem_details.symlink_count + '</span></div>';
         }
         if (result.filesystem_details.capacity_percent) {
-          html += '<div class="forensic-item"><span class="forensic-label">Kapazität:</span> <span class="forensic-value">' + result.filesystem_details.capacity_percent + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.capacity') + ':</span> <span class="forensic-value">' + result.filesystem_details.capacity_percent + '</span></div>';
         }
         if (result.filesystem_details.inode_usage_percent) {
           html += '<div class="forensic-item"><span class="forensic-label">Inode-Nutzung:</span> <span class="forensic-value">' + result.filesystem_details.inode_usage_percent + '</span></div>';
@@ -2486,99 +2555,101 @@ document.addEventListener('DOMContentLoaded', async () => {
         // SMART labels for translation
         const smartLabels = {
           // Device identification
-          'model_family': t('tools.smartModelFamily') || 'Modell-Familie',
-          'device_model': t('tools.smartDeviceModel') || 'Geräte-Modell',
-          'serial_number': t('tools.smartSerial') || 'Seriennummer',
-          'wwn_id': t('tools.smartWwn') || 'WWN Device ID',
-          'firmware_version': t('tools.smartFirmware') || 'Firmware-Version',
-          'device_type': 'Gerätetyp',
+          'model_family': t('tools.smartModelFamily'),
+          'device_model': t('tools.smartDeviceModel'),
+          'serial_number': t('tools.smartSerial'),
+          'wwn_id': t('tools.smartWwnId'),
+          'firmware_version': t('tools.smartFirmware'),
+          'device_type': t('tools.smartDeviceType'),
           // Capacity and physical
-          'capacity': t('tools.smartCapacity') || 'Kapazität',
-          'logical_block_size': 'Logische Blockgröße',
-          'physical_block_size': 'Physische Blockgröße',
-          'sector_size': t('tools.smartSectorSize') || 'Sektorgröße',
-          'rotation_rate': t('tools.smartRotation') || 'Drehzahl',
-          'form_factor': t('tools.smartFormFactor') || 'Formfaktor',
+          'capacity': t('tools.smartCapacity'),
+          'logical_block_size': t('tools.smartLogicalBlockSize'),
+          'physical_block_size': t('tools.smartPhysicalBlockSize'),
+          'sector_size': t('tools.smartSectorSize'),
+          'rotation_rate': t('tools.smartRotationRate'),
+          'form_factor': t('tools.smartFormFactor'),
           // Interface
-          'protocol': 'Protokoll',
-          'ata_version': t('tools.smartAta') || 'ATA-Version',
-          'sata_version': t('tools.smartSata') || 'SATA-Version',
-          'interface_speed_max': 'Max. Interface-Geschwindigkeit',
-          'interface_speed_current': 'Aktuelle Interface-Geschwindigkeit',
+          'protocol': t('tools.smartProtocol'),
+          'ata_version': t('tools.smartAtaVersion'),
+          'sata_version': t('tools.smartSataVersion'),
+          'interface_speed_max': t('tools.smartMaxSpeed'),
+          'interface_speed_current': t('tools.smartCurrentSpeed'),
           // Status and capabilities
-          'smart_supported': t('tools.smartSupported') || 'SMART verfügbar',
-          'smart_enabled': 'SMART aktiviert',
-          'health_status': t('tools.smartHealth') || 'Gesundheitsstatus',
-          'trim_supported': t('tools.smartTrim') || 'TRIM-Unterstützung',
-          'write_cache_enabled': 'Write-Cache aktiviert',
-          'read_lookahead_enabled': 'Read Look-Ahead aktiviert',
-          'ata_security_enabled': 'ATA-Security aktiviert',
-          'ata_security_frozen': 'ATA-Security eingefroren',
+          'smart_supported': t('tools.smartSupported'),
+          'smart_enabled': t('tools.smartEnabled'),
+          'health_status': t('tools.smartHealthStatus'),
+          'trim_supported': t('tools.smartTrimSupported'),
+          'write_cache_enabled': t('tools.smartWriteCacheEnabled'),
+          'read_lookahead_enabled': t('tools.smartReadLookaheadEnabled'),
+          'ata_security_enabled': t('tools.smartSecurityEnabled'),
+          'ata_security_frozen': t('tools.smartSecurityFrozen'),
           // Temperature (SCT)
-          'temperature': t('tools.smartTemperature') || 'Temperatur',
-          'sct_temperature_current': 'Aktuelle Temperatur (SCT)',
-          'sct_temperature_lifetime_min': 'Min. Temperatur (Lebensdauer)',
-          'sct_temperature_lifetime_max': 'Max. Temperatur (Lebensdauer)',
-          'sct_temperature_op_limit': 'Betriebs-Temperaturlimit',
+          'temperature': t('tools.smartTemperature'),
+          'sct_temperature_current': t('tools.smartTempCurrent'),
+          'sct_temperature_lifetime_min': t('tools.smartTempLifetimeMin'),
+          'sct_temperature_lifetime_max': t('tools.smartTempLifetimeMax'),
+          'sct_temperature_op_limit': t('tools.smartTempOpLimit'),
           // Usage stats
-          'power_on_hours': t('tools.smartPowerOnHours') || 'Betriebsstunden',
-          'power_cycle_count': t('tools.smartPowerCycles') || 'Ein-/Ausschaltzyklen',
-          'total_data_written': t('tools.smartDataWritten') || 'Gesamt geschrieben',
-          'total_data_read': t('tools.smartDataRead') || 'Gesamt gelesen',
+          'power_on_hours': t('tools.smartPowerOnHours'),
+          'power_cycle_count': t('tools.smartPowerCycleCount'),
+          'total_data_written': t('tools.smartTotalWritten'),
+          'total_data_read': t('tools.smartTotalRead'),
           // Self-test
-          'self_test_status': 'Selbsttest-Status',
-          'self_test_short_minutes': 'Kurztest-Dauer (Min.)',
-          'self_test_extended_minutes': 'Erweiterter Test-Dauer (Min.)',
+          'self_test_status': t('tools.smartSelfTestStatus'),
+          'self_test_short_minutes': t('tools.smartShortTestMinutes'),
+          'self_test_extended_minutes': t('tools.smartExtendedTestMinutes'),
           // Error logs
-          'error_log_count': 'Fehlerprotokoll-Einträge',
-          'self_test_log_count': 'Selbsttest-Protokoll-Einträge',
+          'error_log_count': t('tools.smartErrorLogCount'),
+          'self_test_log_count': t('tools.smartSelfTestLogCount'),
           // SSD-specific
-          'endurance_used_percent': 'Endurance verbraucht',
-          'spare_available_percent': 'Reserve verfügbar',
-          'ssd_wear_level': t('tools.smartWearLevel') || 'SSD-Verschleiß',
-          'lifetime_remaining': t('tools.smartLifetime') || 'Verbleibende Lebensdauer',
+          'endurance_used_percent': t('tools.smartEnduranceUsed'),
+          'spare_available_percent': t('tools.smartSpareAvailable'),
+          'ssd_wear_level': t('tools.smartWearLevel'),
+          'lifetime_remaining': t('tools.smartLifetime'),
           // Sector health
-          'reallocated_sectors': t('tools.smartReallocated') || 'Umverteilte Sektoren',
-          'pending_sectors': t('tools.smartPending') || 'Ausstehende Sektoren',
-          'uncorrectable_sectors': 'Unkorrigierbare Sektoren',
-          'offline_uncorrectable': t('tools.smartOfflineUncorr') || 'Offline unkorrigierbar',
+          'reallocated_sectors': t('tools.smartReallocatedSectors'),
+          'pending_sectors': t('tools.smartPendingSectors'),
+          'uncorrectable_sectors': t('tools.smartUncorrectableSectors'),
+          'offline_uncorrectable': t('tools.smartOfflineUncorr'),
           // Other attributes
-          'used_reserved_blocks': t('tools.smartReservedBlocks') || 'Reservierte Blöcke verwendet',
-          'program_fail_count': t('tools.smartProgramFail') || 'Schreibfehler',
-          'erase_fail_count': t('tools.smartEraseFail') || 'Löschfehler',
-          'runtime_bad_blocks': t('tools.smartBadBlocks') || 'Defekte Blöcke (Laufzeit)',
-          'uncorrectable_errors': t('tools.smartUncorrectable') || 'Unkorrigierbare Fehler',
-          'ecc_error_rate': t('tools.smartEcc') || 'ECC-Fehlerrate',
-          'crc_error_count': t('tools.smartCrc') || 'CRC-Fehler',
-          'unexpected_power_loss': t('tools.smartPowerLoss') || 'Unerwartete Stromausfälle',
-          'bad_flash_blocks': t('tools.smartBadFlash') || 'Defekte Flash-Blöcke',
-          'spin_up_time': t('tools.smartSpinUp') || 'Anlaufzeit',
-          'start_stop_count': t('tools.smartStartStop') || 'Start/Stop-Zyklen',
-          'seek_error_rate': t('tools.smartSeekError') || 'Suchfehlerrate',
-          'head_flying_hours': t('tools.smartHeadHours') || 'Kopf-Flugstunden',
-          'load_cycle_count': t('tools.smartLoadCycles') || 'Lade-Zyklen',
+          'used_reserved_blocks': t('tools.smartReservedBlocks'),
+          'program_fail_count': t('tools.smartProgramFail'),
+          'erase_fail_count': t('tools.smartEraseFail'),
+          'runtime_bad_blocks': t('tools.smartBadBlocks'),
+          'uncorrectable_errors': t('tools.smartUncorrectable'),
+          'ecc_error_rate': t('tools.smartEcc'),
+          'crc_error_count': t('tools.smartCrc'),
+          'unexpected_power_loss': t('tools.smartPowerLoss'),
+          'bad_flash_blocks': t('tools.smartBadFlash'),
+          'spin_up_time': t('tools.smartSpinUp'),
+          'start_stop_count': t('tools.smartStartStop'),
+          'seek_error_rate': t('tools.smartSeekError'),
+          'head_flying_hours': t('tools.smartHeadHours'),
+          'load_cycle_count': t('tools.smartLoadCycles'),
           // SD Card specific
-          'manufacturer': t('tools.smartManufacturer') || 'Hersteller',
-          'sd_spec_version': t('tools.smartSdSpec') || 'SD-Spezifikation',
-          'manufacturing_date': t('tools.smartMfgDate') || 'Herstellungsdatum',
-          'source': 'Datenquelle'
+          'manufacturer': t('tools.manufacturer'),
+          'sd_spec_version': t('tools.sdSpecVersion'),
+          'manufacturing_date': t('tools.manufacturingDate'),
+          'source': t('tools.dataSource')
         };
         
         html += '<div class="forensic-section">';
-        html += '<h5>🔬 ' + (t('tools.forensicSmart') || 'SMART-Daten (S.M.A.R.T.)') + '</h5>';
+        html += '<h5>🔬 ' + t('tools.forensicSmart') + '</h5>';
         
         // Device Info subsection
-        html += '<div class="forensic-subsection"><strong>📱 Geräteinformationen:</strong></div>';
+        html += '<div class="forensic-subsection"><strong>📱 ' + t('tools.forensicDeviceInfo') + ':</strong></div>';
         html += '<div class="forensic-grid">';
         const deviceFields = ['model_family', 'device_model', 'manufacturer', 'serial_number', 'firmware_version', 
                              'device_type', 'capacity', 'logical_block_size', 'physical_block_size',
                              'rotation_rate', 'form_factor'];
         
+        const yesNo = (val) => val ? '✅ ' + t('common.yes') : '❌ ' + t('common.no');
+        
         for (let key of deviceFields) {
           if (result.smart_info[key] !== undefined) {
             let value = result.smart_info[key];
             if (typeof value === 'boolean') {
-              value = value ? '✅ Ja' : '❌ Nein';
+              value = yesNo(value);
             }
             const label = smartLabels[key] || key.replace(/_/g, ' ');
             html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
@@ -2590,7 +2661,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const interfaceFields = ['protocol', 'ata_version', 'sata_version', 'interface_speed_max', 'interface_speed_current'];
         const hasInterfaceData = interfaceFields.some(k => result.smart_info[k] !== undefined);
         if (hasInterfaceData) {
-          html += '<div class="forensic-subsection"><strong>🔌 Schnittstelle:</strong></div>';
+          html += '<div class="forensic-subsection"><strong>🔌 ' + t('tools.interface') + ':</strong></div>';
           html += '<div class="forensic-grid">';
           for (let key of interfaceFields) {
             if (result.smart_info[key] !== undefined) {
@@ -2607,13 +2678,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                           'write_cache_enabled', 'read_lookahead_enabled', 'ata_security_enabled', 'ata_security_frozen'];
         const hasCapData = capFields.some(k => result.smart_info[k] !== undefined);
         if (hasCapData) {
-          html += '<div class="forensic-subsection"><strong>⚙️ Fähigkeiten & Status:</strong></div>';
+          html += '<div class="forensic-subsection"><strong>⚙️ ' + t('tools.capabilitiesStatus') + ':</strong></div>';
           html += '<div class="forensic-grid">';
           for (let key of capFields) {
             if (result.smart_info[key] !== undefined) {
               let value = result.smart_info[key];
               if (typeof value === 'boolean') {
-                value = value ? '✅ Ja' : '❌ Nein';
+                value = yesNo(value);
               }
               const label = smartLabels[key] || key.replace(/_/g, ' ');
               html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
@@ -2627,7 +2698,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                            'sct_temperature_lifetime_max', 'sct_temperature_op_limit'];
         const hasTempData = tempFields.some(k => result.smart_info[k] !== undefined);
         if (hasTempData) {
-          html += '<div class="forensic-subsection"><strong>🌡️ Temperatur:</strong></div>';
+          html += '<div class="forensic-subsection"><strong>🌡️ Temperature:</strong></div>';
           html += '<div class="forensic-grid">';
           for (let key of tempFields) {
             if (result.smart_info[key] !== undefined) {
@@ -2644,7 +2715,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             'endurance_used_percent', 'spare_available_percent'];
         const hasUsageData = usageFields.some(k => result.smart_info[k] !== undefined);
         if (hasUsageData) {
-          html += '<div class="forensic-subsection"><strong>📊 Nutzungsstatistiken:</strong></div>';
+          html += '<div class="forensic-subsection"><strong>📊 ' + t('tools.usageStatistics') + ':</strong></div>';
           html += '<div class="forensic-grid">';
           for (let key of usageFields) {
             if (result.smart_info[key] !== undefined) {
@@ -2661,7 +2732,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                            'error_log_count', 'self_test_log_count'];
         const hasTestData = testFields.some(k => result.smart_info[k] !== undefined);
         if (hasTestData) {
-          html += '<div class="forensic-subsection"><strong>🧪 Selbsttest & Protokolle:</strong></div>';
+          html += '<div class="forensic-subsection"><strong>🧪 ' + t('tools.selfTestLogs') + ':</strong></div>';
           html += '<div class="forensic-grid">';
           for (let key of testFields) {
             if (result.smart_info[key] !== undefined) {
@@ -2677,7 +2748,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const sectorFields = ['reallocated_sectors', 'pending_sectors', 'uncorrectable_sectors', 'offline_uncorrectable'];
         const hasSectorData = sectorFields.some(k => result.smart_info[k] !== undefined);
         if (hasSectorData) {
-          html += '<div class="forensic-subsection"><strong>💾 Sektoren-Gesundheit:</strong></div>';
+          html += '<div class="forensic-subsection"><strong>💾 ' + t('tools.sectorHealth') + ':</strong></div>';
           html += '<div class="forensic-grid">';
           for (let key of sectorFields) {
             if (result.smart_info[key] !== undefined) {
@@ -2691,10 +2762,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Full SMART Attributes Table (from attributes_table)
         if (result.smart_info.attributes_table && result.smart_info.attributes_table.length > 0) {
-          html += '<div class="forensic-subsection"><strong>📋 Vollständige SMART-Attribute:</strong></div>';
+          html += '<div class="forensic-subsection"><strong>📋 ' + t('tools.fullSmartAttributes') + ':</strong></div>';
           html += '<div class="smart-attributes-table-container">';
           html += '<table class="smart-attributes-table">';
-          html += '<thead><tr><th>ID</th><th>Attribut</th><th>Wert</th><th>Worst</th><th>Thresh</th><th>Raw</th><th>Flags</th><th>Status</th></tr></thead>';
+          html += '<thead><tr><th>ID</th><th>Attribute</th><th>Value</th><th>Worst</th><th>Thresh</th><th>Raw</th><th>Flags</th><th>Status</th></tr></thead>';
           html += '<tbody>';
           
           for (let attr of result.smart_info.attributes_table) {
@@ -2721,7 +2792,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Legacy attributes format (for backward compatibility)
         if (result.smart_info.attributes && Object.keys(result.smart_info.attributes).length > 0) {
           html += '<div class="forensic-subsection">';
-          html += '<strong>📊 ' + (t('tools.smartAttributes') || 'SMART-Attribute') + ':</strong>';
+          html += '<strong>📊 ' + (t('tools.smartAttributes') || 'SMART Attributes') + ':</strong>';
           html += '<div class="forensic-grid smart-attrs">';
           
           for (let attrKey in result.smart_info.attributes) {
@@ -2734,7 +2805,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Data source
         if (result.smart_info.source) {
-          html += '<div class="forensic-item" style="margin-top: 10px; font-size: 0.85em; opacity: 0.7;"><span class="forensic-label">Datenquelle:</span> <span class="forensic-value">' + result.smart_info.source + '</span></div>';
+          html += '<div class="forensic-item" style="margin-top: 10px; font-size: 0.85em; opacity: 0.7;"><span class="forensic-label">' + t('tools.dataSource') + ':</span> <span class="forensic-value">' + result.smart_info.source + '</span></div>';
         }
         
         html += '</div>';
@@ -2743,7 +2814,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Sector Checksums Section
       if (result.sector_checksums) {
         html += '<div class="forensic-section">';
-        html += '<h5>🔐 ' + (t('tools.forensicChecksums') || 'MBR-Checksummen') + '</h5>';
+        html += '<h5>🔐 ' + t('tools.forensicChecksums') + '</h5>';
         html += '<div class="forensic-grid">';
         if (result.sector_checksums.mbr_md5) {
           html += '<div class="forensic-item full-width"><span class="forensic-label">MD5:</span> <span class="forensic-value mono">' + result.sector_checksums.mbr_md5 + '</span></div>';
@@ -2811,14 +2882,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (filePath) {
         const jsonContent = JSON.stringify(lastForensicResult, null, 2);
         await invoke('write_text_file', { path: filePath, content: jsonContent });
-        copyForensicBtn.textContent = '✓ Gespeichert!';
-        logForensic('Report als JSON gespeichert: ' + filePath, 'success');
+        copyForensicBtn.textContent = '✓ ' + t('messages.success');
+        logForensic(t('forensic.reportSaved').replace('{path}', filePath), 'success');
         setTimeout(() => {
-          copyForensicBtn.textContent = '💾 JSON speichern';
+          copyForensicBtn.textContent = '💾 ' + t('forensic.saveJson');
         }, 2000);
       }
     } catch (err) {
-      logForensic('JSON Export-Fehler: ' + err, 'error');
+      logForensic(t('forensic.exportError').replace('{error}', err), 'error');
     }
   });
   
@@ -2836,22 +2907,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (filePath) {
         const htmlContent = generateForensicHtmlReport(lastForensicResult);
         await invoke('write_text_file', { path: filePath, content: htmlContent });
-        logForensic('Report als HTML gespeichert: ' + filePath, 'success');
+        logForensic(t('forensic.reportSaved').replace('{path}', filePath), 'success');
       }
     } catch (err) {
-      logForensic('Export-Fehler: ' + err, 'error');
+      logForensic(t('forensic.exportError').replace('{error}', err), 'error');
     }
   });
   
   // Helper function to generate standalone HTML report
   function generateForensicHtmlReport(result) {
     const deviceName = result.disk_info?.Device || result.disk_info?.['Device Identifier'] || 'USB';
+    const currentLang = window.i18n.currentLang;
     let html = `<!DOCTYPE html>
-<html lang="de">
+<html lang="${currentLang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Forensik-Report - ${deviceName}</title>
+  <title>${t('forensic.reportTitle')} - ${deviceName}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
     .report { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
@@ -2880,15 +2952,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 <body>
   <div class="report">
     <div class="header">
-      <h1>🔬 Forensik-Analyse Report</h1>
-      <div class="timestamp">Erstellt: ${result.timestamp}</div>
+      <h1>🔬 ${t('forensic.reportTitle')}</h1>
+      <div class="timestamp">${t('forensic.createdAt')}: ${result.timestamp}</div>
     </div>`;
     
     // Device Info
     // Check if this is an SD Card
     const isSDCardExport = result.usb_info && result.usb_info.hardware_type === 'SD Card';
     
-    html += `<div class="section"><h2>📱 Geräteinformationen</h2><div class="grid">`;
+    html += `<div class="section"><h2>📱 ${t('forensic.deviceInfo')}</h2><div class="grid">`;
     for (let key in result.disk_info) {
       // Skip smart_status from diskutil for SD Cards
       if (isSDCardExport && key === 'smart_status') continue;
@@ -2901,13 +2973,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Partitions Section
     if (result.partitions && Array.isArray(result.partitions) && result.partitions.length > 0) {
-      html += `<div class="section"><h2>💾 Partitionslayout (${result.partitions.length})</h2>`;
+      html += `<div class="section"><h2>💾 ${t('forensic.partitionLayout')} (${result.partitions.length})</h2>`;
       result.partitions.forEach((partition, idx) => {
-        const partId = partition.partition_id || `Partition ${idx + 1}`;
+        const partId = partition.partition_id || `${t('tools.partition')} ${idx + 1}`;
         const volName = partition.volume_name || '-';
         const fs = partition.filesystem || partition.partition_type || partition.content_type || '-';
         const size = partition.size || '-';
-        const mountPoint = partition.mount_point || 'Nicht gemountet';
+        const mountPoint = partition.mount_point || t('tools.notMounted');
         const apfsContainer = partition.apfs_container || null;
         const apfsVolumes = partition.apfs_volumes || [];
         
@@ -2915,31 +2987,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += `<strong>📂 ${partId}</strong>`;
         if (volName !== '-') html += ` - <span style="color: #1976d2;">${volName}</span>`;
         html += `<div class="grid" style="margin-top: 8px;">`;
-        html += `<div class="item"><span class="label">Dateisystem:</span> <span class="value">${fs}</span></div>`;
-        html += `<div class="item"><span class="label">Größe:</span> <span class="value">${size}</span></div>`;
+        html += `<div class="item"><span class="label">${t('tools.filesystem')}:</span> <span class="value">${fs}</span></div>`;
+        html += `<div class="item"><span class="label">${t('tools.size')}:</span> <span class="value">${size}</span></div>`;
         
         if (apfsContainer) {
-          html += `<div class="item"><span class="label">APFS Container:</span> <span class="value">${apfsContainer}</span></div>`;
+          html += `<div class="item"><span class="label">${t('tools.apfsContainer')}:</span> <span class="value">${apfsContainer}</span></div>`;
         }
         if (!apfsContainer) {
-          html += `<div class="item"><span class="label">Mount-Punkt:</span> <span class="value">${mountPoint}</span></div>`;
+          html += `<div class="item"><span class="label">${t('tools.mountPoint')}:</span> <span class="value">${mountPoint}</span></div>`;
         }
         if (partition.used_space) {
-          html += `<div class="item"><span class="label">Belegt:</span> <span class="value">${partition.used_space}</span></div>`;
+          html += `<div class="item"><span class="label">${t('tools.usedSpace')}:</span> <span class="value">${partition.used_space}</span></div>`;
         }
         if (partition.free_space) {
-          html += `<div class="item"><span class="label">Frei:</span> <span class="value">${partition.free_space}</span></div>`;
+          html += `<div class="item"><span class="label">${t('tools.freeSpace')}:</span> <span class="value">${partition.free_space}</span></div>`;
         }
         html += `</div>`;
         
         // APFS Volumes
         if (apfsVolumes.length > 0) {
           html += `<div style="margin-top: 10px; padding-left: 15px; border-left: 3px solid #1976d2;">`;
-          html += `<strong style="color: #ff9800;">📦 APFS Volumes (${apfsVolumes.length}):</strong>`;
+          html += `<strong style="color: #ff9800;">📦 ${t('tools.apfsVolumes')} (${apfsVolumes.length}):</strong>`;
           apfsVolumes.forEach((vol) => {
             const volId = vol.volume_id || '-';
             const volNameApfs = vol.name || '-';
-            const volMount = vol.mount_point || 'Nicht gemountet';
+            const volMount = vol.mount_point || t('tools.notMounted');
             const volUsed = vol.used || '-';
             const volFileVault = vol.filevault || '-';
             
@@ -2947,10 +3019,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             html += `<span style="color: #4caf50;">📁 ${volId}</span> - <strong>${volNameApfs}</strong><br>`;
             html += `<span style="font-size: 0.9em;">Mount: ${volMount}</span>`;
             if (volUsed !== '-') {
-              html += ` | <span style="font-size: 0.9em;">Belegt: ${volUsed}</span>`;
+              html += ` | <span style="font-size: 0.9em;">${t('tools.usedSpace')}: ${volUsed}</span>`;
             }
             if (volFileVault !== '-' && volFileVault !== 'No') {
-              html += ` | <span style="font-size: 0.9em; color: #f44336;">FileVault: ${volFileVault}</span>`;
+              html += ` | <span style="font-size: 0.9em; color: #f44336;">${t('tools.fileVault')}: ${volFileVault}</span>`;
             }
             html += `</div>`;
           });
@@ -2964,20 +3036,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // USB Info - properly format USB devices
     if (result.usb_info && Object.keys(result.usb_info).length > 0) {
-      html += `<div class="section"><h2>🔌 USB-Geräteinformationen</h2>`;
+      html += `<div class="section"><h2>🔌 ${t('forensic.usbDeviceInfo')}</h2>`;
       
       if (result.usb_info.devices && Array.isArray(result.usb_info.devices)) {
         // Multiple devices
         result.usb_info.devices.forEach((device, idx) => {
           html += `<div style="border: 1px solid #ddd; padding: 12px; margin: 8px 0; border-radius: 6px; background: #fff;">`;
-          html += `<strong style="color: #2196F3;">📱 Gerät ${idx + 1}: ${device.product_name || 'Unbekannt'}</strong><div class="grid" style="margin-top: 8px;">`;
-          if (device.manufacturer) html += `<div class="item"><span class="label">Hersteller:</span> <span class="value">${device.manufacturer}</span></div>`;
+          html += `<strong style="color: #2196F3;">📱 ${t('tools.device')} ${idx + 1}: ${device.product_name || t('tools.unknown')}</strong><div class="grid" style="margin-top: 8px;">`;
+          if (device.manufacturer) html += `<div class="item"><span class="label">${t('tools.manufacturer')}:</span> <span class="value">${device.manufacturer}</span></div>`;
           if (device.vendor_id) html += `<div class="item"><span class="label">Vendor ID:</span> <span class="value mono">${device.vendor_id}</span></div>`;
           if (device.product_id) html += `<div class="item"><span class="label">Product ID:</span> <span class="value mono">${device.product_id}</span></div>`;
-          if (device.serial_number) html += `<div class="item"><span class="label">Seriennummer:</span> <span class="value mono" style="font-size: 10px;">${device.serial_number}</span></div>`;
-          if (device.usb_speed) html += `<div class="item"><span class="label">USB-Geschwindigkeit:</span> <span class="value" style="color: #4caf50;">${device.usb_speed}</span></div>`;
-          if (device.power_allocation) html += `<div class="item"><span class="label">Stromverbrauch:</span> <span class="value">${device.power_allocation}</span></div>`;
-          if (device.device_version) html += `<div class="item"><span class="label">Geräteversion:</span> <span class="value">${device.device_version}</span></div>`;
+          if (device.serial_number) html += `<div class="item"><span class="label">${t('tools.serialNumber')}:</span> <span class="value mono" style="font-size: 10px;">${device.serial_number}</span></div>`;
+          if (device.usb_speed) html += `<div class="item"><span class="label">${t('tools.usbSpeed')}:</span> <span class="value" style="color: #4caf50;">${device.usb_speed}</span></div>`;
+          if (device.power_allocation) html += `<div class="item"><span class="label">${t('tools.powerConsumption')}:</span> <span class="value">${device.power_allocation}</span></div>`;
+          if (device.device_version) html += `<div class="item"><span class="label">${t('tools.deviceVersion')}:</span> <span class="value">${device.device_version}</span></div>`;
           if (device.location_id) html += `<div class="item"><span class="label">Location ID:</span> <span class="value mono">${device.location_id}</span></div>`;
           html += `</div></div>`;
         });
@@ -2985,24 +3057,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Single device - flat structure (USB or SD Card)
         html += `<div class="grid">`;
         const usbLabels = {
-          product_name: 'Produktname',
-          card_model: 'Kartenmodell',
-          manufacturer: 'Hersteller', 
-          manufacturer_id: 'Hersteller-ID',
+          product_name: t('tools.productName'),
+          card_model: t('tools.cardModel'),
+          manufacturer: t('tools.manufacturer'), 
+          manufacturer_id: t('tools.manufacturerId'),
           vendor_id: 'Vendor ID',
           product_id: 'Product ID',
-          serial_number: 'Seriennummer',
-          usb_speed: 'USB-Geschwindigkeit',
-          reader_link_speed: 'Card Reader Speed',
-          power_allocation: 'Stromverbrauch',
-          device_version: 'Geräteversion',
+          serial_number: t('tools.serialNumber'),
+          usb_speed: t('tools.usbSpeed'),
+          reader_link_speed: t('tools.readerSpeed'),
+          power_allocation: t('tools.powerConsumption'),
+          device_version: t('tools.deviceVersion'),
           location_id: 'Location ID',
-          hardware_type: 'Gerätetyp',
-          manufacturing_date: 'Herstellungsdatum',
-          sd_spec_version: 'SD-Spezifikation',
-          capacity: 'Kapazität',
+          hardware_type: t('tools.deviceType'),
+          manufacturing_date: t('tools.manufacturingDate'),
+          sd_spec_version: t('tools.sdSpecVersion'),
+          capacity: t('tools.capacity'),
           smart_status: 'SMART Status',
-          reader_vendor_id: 'Card Reader Vendor'
+          reader_vendor_id: t('tools.readerVendor')
         };
         // Define order for display (USB and SD Card fields)
         const orderedKeys = ['product_name', 'card_model', 'manufacturer', 'manufacturer_id', 'vendor_id', 'product_id', 'serial_number', 'usb_speed', 'reader_link_speed', 'power_allocation', 'device_version', 'manufacturing_date', 'sd_spec_version', 'capacity', 'smart_status', 'location_id', 'reader_vendor_id', 'hardware_type'];
@@ -3026,29 +3098,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Partition Layout
     if (result.partition_layout && result.partition_layout.partitions && result.partition_layout.partitions.length > 0) {
-      html += `<div class="section"><h2>💾 Partitionslayout</h2>`;
+      html += `<div class="section"><h2>💾 ${t('forensic.partitionLayout')}</h2>`;
       html += `<div class="grid">`;
       if (result.partition_layout.scheme) {
-        html += `<div class="item"><span class="label">Schema:</span> <span class="value">${result.partition_layout.scheme}</span></div>`;
+        html += `<div class="item"><span class="label">${t('tools.partitionScheme')}:</span> <span class="value">${result.partition_layout.scheme}</span></div>`;
       }
       html += `</div>`;
       result.partition_layout.partitions.forEach(p => {
-        html += `<div class="partition"><strong>${p.identifier}</strong> - ${p.type || 'Unbekannt'} ${p.name ? '"' + p.name + '"' : ''} ${p.size ? '(' + p.size + ')' : ''}</div>`;
+        html += `<div class="partition"><strong>${p.identifier}</strong> - ${p.type || t('tools.unknown')} ${p.name ? '"' + p.name + '"' : ''} ${p.size ? '(' + p.size + ')' : ''}</div>`;
       });
       html += `</div>`;
     }
     
     // Filesystem Signatures
     if (result.filesystem_signatures) {
-      html += `<div class="section"><h2>📂 Erkannte Dateisysteme</h2>`;
+      html += `<div class="section"><h2>📂 ${t('forensic.detectedFilesystems')}</h2>`;
       const filesystems = result.filesystem_signatures.detected_filesystems || [];
       if (filesystems.length > 0) {
         filesystems.forEach(fs => {
-          const fsName = typeof fs === 'string' ? fs : (fs.filesystem || 'Unbekannt');
+          const fsName = typeof fs === 'string' ? fs : (fs.filesystem || t('tools.unknown'));
           html += `<span class="fs-badge">${fsName}</span>`;
         });
       } else {
-        html += `<p>Keine erkannten Dateisysteme</p>`;
+        html += `<p>${t('forensic.noFilesystemsDetected')}</p>`;
       }
       html += `</div>`;
     }
@@ -3058,35 +3130,35 @@ document.addEventListener('DOMContentLoaded', async () => {
       const hasMbr = result.boot_info.has_mbr_signature || result.boot_info.has_mbr;
       const hasGpt = result.boot_info.has_gpt;
       const gptGuid = result.boot_info.gpt_disk_guid;
-      html += `<div class="section"><h2>🚀 Boot-Strukturen</h2><div class="grid">`;
-      html += `<div class="item"><span class="label">MBR-Signatur:</span> <span class="value">${hasMbr ? '✓ (55AA)' : '✗'}</span></div>`;
-      html += `<div class="item"><span class="label">GPT:</span> <span class="value">${hasGpt ? '✓ (EFI PART)' : '✗'}</span></div>`;
+      html += `<div class="section"><h2>🚀 ${t('forensic.bootStructures')}</h2><div class="grid">`;
+      html += `<div class="item"><span class="label">${t('forensic.mbrSignature')}:</span> <span class="value">${hasMbr ? '✓ (55AA)' : '✗'}</span></div>`;
+      html += `<div class="item"><span class="label">${t('forensic.gpt')}:</span> <span class="value">${hasGpt ? '✓ (EFI PART)' : '✗'}</span></div>`;
       if (gptGuid) {
-        html += `<div class="item full-width"><span class="label">GPT Disk GUID:</span> <span class="value mono">${gptGuid}</span></div>`;
+        html += `<div class="item full-width"><span class="label">${t('forensic.gptDiskGuid')}:</span> <span class="value mono">${gptGuid}</span></div>`;
       }
       if (result.boot_info.is_iso9660) {
         html += `<div class="item"><span class="label">ISO 9660:</span> <span class="value">✓</span></div>`;
       }
       if (result.boot_info.iso_volume_label) {
-        html += `<div class="item"><span class="label">ISO Label:</span> <span class="value">${result.boot_info.iso_volume_label}</span></div>`;
+        html += `<div class="item"><span class="label">${t('forensic.isoLabel')}:</span> <span class="value">${result.boot_info.iso_volume_label}</span></div>`;
       }
       if (result.boot_info.has_el_torito_boot) {
-        html += `<div class="item"><span class="label">El Torito Boot:</span> <span class="value">✓</span></div>`;
+        html += `<div class="item"><span class="label">${t('forensic.elToritoBoot')}:</span> <span class="value">✓</span></div>`;
       }
       html += `</div></div>`;
     }
     
     // MBR Analysis
     if (result.mbr_analysis) {
-      html += `<div class="section"><h2>📀 MBR-Analyse</h2><div class="grid">`;
-      html += `<div class="item"><span class="label">Signatur:</span> <span class="value">${result.mbr_analysis.mbr_signature}</span></div>`;
-      html += `<div class="item"><span class="label">Gültig:</span> <span class="value">${result.mbr_analysis.valid_mbr ? '✓ Ja' : '✗ Nein'}</span></div>`;
+      html += `<div class="section"><h2>📀 ${t('forensic.mbrAnalysis')}</h2><div class="grid">`;
+      html += `<div class="item"><span class="label">${t('forensic.signature')}:</span> <span class="value">${result.mbr_analysis.mbr_signature}</span></div>`;
+      html += `<div class="item"><span class="label">${t('forensic.valid')}:</span> <span class="value">${result.mbr_analysis.valid_mbr ? '✓ ' + t('forensic.yes') : '✗ ' + t('forensic.no')}</span></div>`;
       html += `</div>`;
       if (result.mbr_analysis.partition_entries && result.mbr_analysis.partition_entries.length > 0) {
         result.mbr_analysis.partition_entries.forEach(p => {
           const isProtectiveMbr = p.type_hex === '0xEE';
           const bootLabel = isProtectiveMbr ? '' : (p.bootable ? '🚀 Boot' : '');
-          html += `<div class="partition"><strong>Partition ${p.number}</strong> [${p.type_hex}] ${p.type_name} ${bootLabel}</div>`;
+          html += `<div class="partition"><strong>${t('tools.partition')} ${p.number}</strong> [${p.type_hex}] ${p.type_name} ${bootLabel}</div>`;
         });
       }
       html += `</div>`;
@@ -3094,25 +3166,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Mounted Content Analysis
     if (result.mounted_content) {
-      html += `<div class="section"><h2>📁 Gemounteter Inhalt</h2><div class="grid">`;
+      html += `<div class="section"><h2>📁 ${t('forensic.mountedContent')}</h2><div class="grid">`;
       if (result.mounted_content.total_items) {
-        html += `<div class="item"><span class="label">Einträge gesamt:</span> <span class="value">${result.mounted_content.total_items}</span></div>`;
+        html += `<div class="item"><span class="label">${t('forensic.totalEntries')}:</span> <span class="value">${result.mounted_content.total_items}</span></div>`;
       }
       if (result.mounted_content.file_count) {
-        html += `<div class="item"><span class="label">Dateien:</span> <span class="value">${result.mounted_content.file_count}</span></div>`;
+        html += `<div class="item"><span class="label">${t('forensic.files')}:</span> <span class="value">${result.mounted_content.file_count}</span></div>`;
       }
       if (result.mounted_content.used_space) {
-        html += `<div class="item"><span class="label">Belegter Speicher:</span> <span class="value">${result.mounted_content.used_space}</span></div>`;
+        html += `<div class="item"><span class="label">${t('forensic.usedStorage')}:</span> <span class="value">${result.mounted_content.used_space}</span></div>`;
       }
       html += `</div>`;
       
       // OS Detection
       if (result.mounted_content.os_detection) {
         const os = result.mounted_content.os_detection;
-        html += `<div style="margin-top: 10px;"><strong>Erkanntes Betriebssystem:</strong><br/>`;
+        html += `<div style="margin-top: 10px;"><strong>${t('forensic.detectedOS')}:</strong><br/>`;
         if (os.detected_os) html += `<span class="type-badge">${os.detected_os}</span>`;
         if (os.version) html += ` Version: ${os.version}`;
-        if (os.indicators) html += `<br/><small>Indikatoren: ${os.indicators.join(', ')}</small>`;
+        if (os.indicators) html += `<br/><small>${t('forensic.indicators')}: ${os.indicators.join(', ')}</small>`;
         html += `</div>`;
       }
       html += `</div>`;
@@ -3120,62 +3192,62 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // SMART Info Section for HTML export
     if (result.smart_info) {
-      html += `<div class="section"><h2>🔬 SMART-Daten (S.M.A.R.T.)</h2>`;
+      html += `<div class="section"><h2>🔬 ${t('forensic.smartData')}</h2>`;
       
       const smartLabels = {
-        'model_family': 'Modell-Familie',
-        'device_model': 'Geräte-Modell',
-        'serial_number': 'Seriennummer',
-        'wwn_id': 'WWN Device ID',
-        'firmware_version': 'Firmware-Version',
-        'device_type': 'Gerätetyp',
-        'capacity': 'Kapazität',
-        'logical_block_size': 'Logische Blockgröße',
-        'physical_block_size': 'Physische Blockgröße',
-        'rotation_rate': 'Drehzahl',
-        'form_factor': 'Formfaktor',
-        'protocol': 'Protokoll',
-        'ata_version': 'ATA-Version',
-        'sata_version': 'SATA-Version',
-        'interface_speed_max': 'Max. Interface-Geschwindigkeit',
-        'interface_speed_current': 'Aktuelle Interface-Geschwindigkeit',
-        'smart_supported': 'SMART verfügbar',
-        'smart_enabled': 'SMART aktiviert',
-        'health_status': 'Gesundheitsstatus',
-        'trim_supported': 'TRIM-Unterstützung',
-        'write_cache_enabled': 'Write-Cache aktiviert',
-        'read_lookahead_enabled': 'Read Look-Ahead aktiviert',
-        'ata_security_enabled': 'ATA-Security aktiviert',
-        'ata_security_frozen': 'ATA-Security eingefroren',
-        'temperature': 'Temperatur',
-        'sct_temperature_current': 'Aktuelle Temperatur (SCT)',
-        'sct_temperature_lifetime_min': 'Min. Temperatur (Lebensdauer)',
-        'sct_temperature_lifetime_max': 'Max. Temperatur (Lebensdauer)',
-        'sct_temperature_op_limit': 'Betriebs-Temperaturlimit',
-        'power_on_hours': 'Betriebsstunden',
-        'power_cycle_count': 'Ein-/Ausschaltzyklen',
-        'total_data_written': 'Gesamt geschrieben',
-        'total_data_read': 'Gesamt gelesen',
-        'self_test_status': 'Selbsttest-Status',
-        'self_test_short_minutes': 'Kurztest-Dauer (Min.)',
-        'self_test_extended_minutes': 'Erweiterter Test-Dauer (Min.)',
-        'error_log_count': 'Fehlerprotokoll-Einträge',
-        'self_test_log_count': 'Selbsttest-Protokoll-Einträge',
-        'endurance_used_percent': 'Endurance verbraucht',
-        'spare_available_percent': 'Reserve verfügbar',
-        'reallocated_sectors': 'Umverteilte Sektoren',
-        'pending_sectors': 'Ausstehende Sektoren',
-        'uncorrectable_sectors': 'Unkorrigierbare Sektoren'
+        'model_family': t('tools.smartModelFamily'),
+        'device_model': t('tools.smartDeviceModel'),
+        'serial_number': t('tools.smartSerial'),
+        'wwn_id': t('tools.smartWwnId'),
+        'firmware_version': t('tools.smartFirmware'),
+        'device_type': t('tools.smartDeviceType'),
+        'capacity': t('tools.smartCapacity'),
+        'logical_block_size': t('tools.smartLogicalBlockSize'),
+        'physical_block_size': t('tools.smartPhysicalBlockSize'),
+        'rotation_rate': t('tools.smartRotationRate'),
+        'form_factor': t('tools.smartFormFactor'),
+        'protocol': t('tools.smartProtocol'),
+        'ata_version': t('tools.smartAtaVersion'),
+        'sata_version': t('tools.smartSataVersion'),
+        'interface_speed_max': t('tools.smartMaxSpeed'),
+        'interface_speed_current': t('tools.smartCurrentSpeed'),
+        'smart_supported': t('tools.smartSupported'),
+        'smart_enabled': t('tools.smartEnabled'),
+        'health_status': t('tools.smartHealthStatus'),
+        'trim_supported': t('tools.smartTrimSupported'),
+        'write_cache_enabled': t('tools.smartWriteCacheEnabled'),
+        'read_lookahead_enabled': t('tools.smartReadLookaheadEnabled'),
+        'ata_security_enabled': t('tools.smartSecurityEnabled'),
+        'ata_security_frozen': t('tools.smartSecurityFrozen'),
+        'temperature': t('tools.smartTemperature'),
+        'sct_temperature_current': t('tools.smartTempCurrent'),
+        'sct_temperature_lifetime_min': t('tools.smartTempLifetimeMin'),
+        'sct_temperature_lifetime_max': t('tools.smartTempLifetimeMax'),
+        'sct_temperature_op_limit': t('tools.smartTempOpLimit'),
+        'power_on_hours': t('tools.smartPowerOnHours'),
+        'power_cycle_count': t('tools.smartPowerCycleCount'),
+        'total_data_written': t('tools.smartTotalWritten'),
+        'total_data_read': t('tools.smartTotalRead'),
+        'self_test_status': t('tools.smartSelfTestStatus'),
+        'self_test_short_minutes': t('tools.smartShortTestMinutes'),
+        'self_test_extended_minutes': t('tools.smartExtendedTestMinutes'),
+        'error_log_count': t('tools.smartErrorLogCount'),
+        'self_test_log_count': t('tools.smartSelfTestLogCount'),
+        'endurance_used_percent': t('tools.smartEnduranceUsed'),
+        'spare_available_percent': t('tools.smartSpareAvailable'),
+        'reallocated_sectors': t('tools.smartReallocatedSectors'),
+        'pending_sectors': t('tools.smartPendingSectors'),
+        'uncorrectable_sectors': t('tools.smartUncorrectableSectors')
       };
       
       // Device Info
-      html += `<h3 style="font-size: 14px; margin-top: 15px;">📱 Geräteinformationen</h3>`;
+      html += `<h3 style="font-size: 14px; margin-top: 15px;">📱 ${t('forensic.deviceInfo')}</h3>`;
       html += `<div class="grid">`;
       ['model_family', 'device_model', 'serial_number', 'firmware_version', 'device_type', 
        'capacity', 'logical_block_size', 'physical_block_size', 'rotation_rate', 'form_factor'].forEach(key => {
         if (result.smart_info[key] !== undefined) {
           let value = result.smart_info[key];
-          if (typeof value === 'boolean') value = value ? '✅ Ja' : '❌ Nein';
+          if (typeof value === 'boolean') value = value ? '✅ ' + t('forensic.yes') : '❌ ' + t('forensic.no');
           html += `<div class="item"><span class="label">${smartLabels[key] || key}:</span> <span class="value">${value}</span></div>`;
         }
       });
@@ -3184,7 +3256,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Interface Info
       const interfaceFields = ['protocol', 'ata_version', 'sata_version', 'interface_speed_max', 'interface_speed_current'];
       if (interfaceFields.some(k => result.smart_info[k] !== undefined)) {
-        html += `<h3 style="font-size: 14px; margin-top: 15px;">🔌 Schnittstelle</h3>`;
+        html += `<h3 style="font-size: 14px; margin-top: 15px;">🔌 ${t('forensic.interfaceInfo')}</h3>`;
         html += `<div class="grid">`;
         interfaceFields.forEach(key => {
           if (result.smart_info[key] !== undefined) {
@@ -3198,12 +3270,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       const capFields = ['smart_supported', 'smart_enabled', 'health_status', 'trim_supported', 
                         'write_cache_enabled', 'read_lookahead_enabled', 'ata_security_enabled', 'ata_security_frozen'];
       if (capFields.some(k => result.smart_info[k] !== undefined)) {
-        html += `<h3 style="font-size: 14px; margin-top: 15px;">⚙️ Status & Fähigkeiten</h3>`;
+        html += `<h3 style="font-size: 14px; margin-top: 15px;">⚙️ ${t('forensic.statusCapabilities')}</h3>`;
         html += `<div class="grid">`;
         capFields.forEach(key => {
           if (result.smart_info[key] !== undefined) {
             let value = result.smart_info[key];
-            if (typeof value === 'boolean') value = value ? '✅ Ja' : '❌ Nein';
+            if (typeof value === 'boolean') value = value ? '✅ ' + t('forensic.yes') : '❌ ' + t('forensic.no');
             const isHealth = key === 'health_status';
             const style = isHealth && String(value).includes('PASSED') ? 'color: #4caf50; font-weight: bold;' : 
                          (isHealth && String(value).includes('FAILED') ? 'color: #f44336; font-weight: bold;' : '');
@@ -3217,7 +3289,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const tempFields = ['temperature', 'sct_temperature_current', 'sct_temperature_lifetime_min', 
                          'sct_temperature_lifetime_max', 'sct_temperature_op_limit'];
       if (tempFields.some(k => result.smart_info[k] !== undefined)) {
-        html += `<h3 style="font-size: 14px; margin-top: 15px;">🌡️ Temperatur</h3>`;
+        html += `<h3 style="font-size: 14px; margin-top: 15px;">🌡️ ${t('forensic.temperature')}</h3>`;
         html += `<div class="grid">`;
         tempFields.forEach(key => {
           if (result.smart_info[key] !== undefined) {
@@ -3231,7 +3303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const usageFields = ['power_on_hours', 'power_cycle_count', 'total_data_written', 'total_data_read',
                           'endurance_used_percent', 'spare_available_percent'];
       if (usageFields.some(k => result.smart_info[k] !== undefined)) {
-        html += `<h3 style="font-size: 14px; margin-top: 15px;">📊 Nutzungsstatistiken</h3>`;
+        html += `<h3 style="font-size: 14px; margin-top: 15px;">📊 ${t('tools.usageStatistics')}</h3>`;
         html += `<div class="grid">`;
         usageFields.forEach(key => {
           if (result.smart_info[key] !== undefined) {
@@ -3245,7 +3317,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const testFields = ['self_test_status', 'self_test_short_minutes', 'self_test_extended_minutes',
                          'error_log_count', 'self_test_log_count'];
       if (testFields.some(k => result.smart_info[k] !== undefined)) {
-        html += `<h3 style="font-size: 14px; margin-top: 15px;">🧪 Selbsttest & Protokolle</h3>`;
+        html += `<h3 style="font-size: 14px; margin-top: 15px;">🧪 ${t('forensic.selfTestLogs')}</h3>`;
         html += `<div class="grid">`;
         testFields.forEach(key => {
           if (result.smart_info[key] !== undefined) {
@@ -3258,7 +3330,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Sector Health
       const sectorFields = ['reallocated_sectors', 'pending_sectors', 'uncorrectable_sectors'];
       if (sectorFields.some(k => result.smart_info[k] !== undefined)) {
-        html += `<h3 style="font-size: 14px; margin-top: 15px;">💾 Sektoren-Gesundheit</h3>`;
+        html += `<h3 style="font-size: 14px; margin-top: 15px;">💾 ${t('forensic.sectorHealth')}</h3>`;
         html += `<div class="grid">`;
         sectorFields.forEach(key => {
           if (result.smart_info[key] !== undefined) {
@@ -3273,23 +3345,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       // Full SMART Attributes Table
       if (result.smart_info.attributes_table && result.smart_info.attributes_table.length > 0) {
-        html += `<h3 style="font-size: 14px; margin-top: 15px;">📋 Vollständige SMART-Attribute</h3>`;
+        html += `<h3 style="font-size: 14px; margin-top: 15px;">📋 ${t('forensic.smartAttributes')}</h3>`;
         html += `<table style="width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 10px;">`;
         html += `<thead><tr style="background: #333; color: white;">`;
         html += `<th style="padding: 6px; border: 1px solid #444;">ID</th>`;
-        html += `<th style="padding: 6px; border: 1px solid #444;">Attribut</th>`;
-        html += `<th style="padding: 6px; border: 1px solid #444;">Wert</th>`;
-        html += `<th style="padding: 6px; border: 1px solid #444;">Worst</th>`;
-        html += `<th style="padding: 6px; border: 1px solid #444;">Thresh</th>`;
-        html += `<th style="padding: 6px; border: 1px solid #444;">Raw</th>`;
-        html += `<th style="padding: 6px; border: 1px solid #444;">Flags</th>`;
-        html += `<th style="padding: 6px; border: 1px solid #444;">Status</th>`;
+        html += `<th style="padding: 6px; border: 1px solid #444;">${t('forensic.attribute')}</th>`;
+        html += `<th style="padding: 6px; border: 1px solid #444;">${t('forensic.value')}</th>`;
+        html += `<th style="padding: 6px; border: 1px solid #444;">${t('forensic.worst')}</th>`;
+        html += `<th style="padding: 6px; border: 1px solid #444;">${t('forensic.thresh')}</th>`;
+        html += `<th style="padding: 6px; border: 1px solid #444;">${t('forensic.raw')}</th>`;
+        html += `<th style="padding: 6px; border: 1px solid #444;">${t('forensic.flags')}</th>`;
+        html += `<th style="padding: 6px; border: 1px solid #444;">${t('forensic.status')}</th>`;
         html += `</tr></thead><tbody>`;
         
         result.smart_info.attributes_table.forEach(attr => {
           const isPrefailure = attr.prefailure === true;
           const rowBg = isPrefailure ? 'background: #fff3e0;' : '';
-          const status = isPrefailure ? '⚠️ Pre-fail' : '✅ OK';
+          const status = isPrefailure ? '⚠️ ' + t('forensic.prefail') : '✅ ' + t('forensic.ok');
           
           html += `<tr style="${rowBg}">`;
           html += `<td style="padding: 4px; border: 1px solid #ddd; text-align: center;">${attr.id || '-'}</td>`;
@@ -3309,7 +3381,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Legacy attributes (backward compatibility)
       if (result.smart_info.attributes && Object.keys(result.smart_info.attributes).length > 0) {
         html += `<div style="margin-top: 15px; padding: 10px; background: #f0f8ff; border-radius: 6px;">`;
-        html += `<strong>📊 SMART-Attribute:</strong>`;
+        html += `<strong>📊 ${t('forensic.smartAttributes')}:</strong>`;
         html += `<div class="grid" style="margin-top: 8px;">`;
         
         for (let attrKey in result.smart_info.attributes) {
@@ -3327,7 +3399,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       // Data source
       if (result.smart_info.source) {
-        html += `<div style="margin-top: 10px; font-size: 11px; color: #666;">Datenquelle: ${result.smart_info.source}</div>`;
+        html += `<div style="margin-top: 10px; font-size: 11px; color: #666;">${t('tools.dataSource')}: ${result.smart_info.source}</div>`;
       }
       
       html += `</div>`;
@@ -3335,7 +3407,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Checksums
     if (result.sector_checksums) {
-      html += `<div class="section"><h2>🔐 MBR-Checksummen</h2><div class="grid">`;
+      html += `<div class="section"><h2>🔐 ${t('tools.forensicChecksums')}</h2><div class="grid">`;
       if (result.sector_checksums.mbr_md5) {
         html += `<div class="item full-width"><span class="label">MD5:</span> <span class="value mono">${result.sector_checksums.mbr_md5}</span></div>`;
       }
@@ -3347,11 +3419,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Raw Header Hex
     if (result.raw_header_hex) {
-      html += `<div class="section"><h2>🔢 Raw Header (Hex)</h2><pre class="hexdump">${result.raw_header_hex}</pre></div>`;
+      html += `<div class="section"><h2>🔢 ${t('tools.forensicRawHeader')}</h2><pre class="hexdump">${result.raw_header_hex}</pre></div>`;
     }
     
     // JSON Data
-    html += `<div class="section"><h2>📋 Vollständige Daten (JSON)</h2><pre class="mono" style="font-size:10px; max-height:400px; overflow:auto;">${JSON.stringify(result, null, 2)}</pre></div>`;
+    html += `<div class="section"><h2>📋 JSON</h2><pre class="mono" style="font-size:10px; max-height:400px; overflow:auto;">${JSON.stringify(result, null, 2)}</pre></div>`;
     
     html += `</div></body></html>`;
     return html;

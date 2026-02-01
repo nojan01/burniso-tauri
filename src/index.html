@@ -63,6 +63,21 @@
         <p data-i18n="app.subtitle">ISO ↔ USB Images verwalten</p>
       </div>
     </header>
+
+    <!-- Dependencies Warning Banner -->
+    <div id="dependencies-banner" class="dependencies-banner hidden">
+      <div class="dependencies-content">
+        <span class="dependencies-icon">📦</span>
+        <div class="dependencies-text">
+          <strong data-i18n="dependencies.missingTitle">Optionale Tools fehlen</strong>
+          <span id="dependencies-message" data-i18n="dependencies.missingMessage">Für volle Funktionalität:</span>
+        </div>
+        <code id="dependencies-command" class="dependencies-command"></code>
+        <button id="dependencies-copy-btn" class="btn secondary small" title="In Zwischenablage kopieren">📋</button>
+        <button id="dependencies-dismiss-btn" class="btn secondary small" title="Ausblenden">✕</button>
+      </div>
+    </div>
+
     <div class="tabs">
       <button class="tab-btn active" data-tab="burn" data-i18n="tabs.burn">ISO → USB</button>
       <button class="tab-btn" data-tab="backup" data-i18n="tabs.backup">USB → ISO</button>
@@ -599,7 +614,7 @@
       </div>
 
       <div class="section">
-        <h3>� <span data-i18n="tools.repairTitle">First Aid</span></h3>
+        <h3>🩹 <span data-i18n="tools.repairTitle">First Aid</span></h3>
 
         <button id="repair-btn" class="btn primary" disabled>
           🔧 <span data-i18n="tools.repairButton">Datenträger reparieren</span>
@@ -607,7 +622,7 @@
       </div>
 
       <div class="section">
-        <h3>�🗑️ <span data-i18n="tools.secureEraseTitle">Sicheres Löschen</span></h3>
+        <h3>🗑️ <span data-i18n="tools.secureEraseTitle">Sicheres Löschen</span></h3>
         <div class="erase-options">
           <label class="radio-option">
             <input type="radio" name="erase-level" value="0" checked />
