@@ -1,6 +1,6 @@
 # 🗺️ BurnISO to USB - Roadmap
 
-## Version 1.2.0 (In Arbeit)
+## Version 1.2.0 (Abgeschlossen)
 
 ### 🎨 UX-Verbesserungen
 
@@ -31,7 +31,7 @@
 
 ---
 
-## Version 1.3.0 (Geplant)
+## Version 1.3.0 (Teilweise abgeschlossen)
 
 ### 🚀 Funktionale Erweiterungen
 
@@ -96,6 +96,14 @@
 ---
 
 ## ✅ Abgeschlossen
+
+### Version 1.4.0 (04.05.2026)
+- [x] **Code-Review Härtung (siehe `CODE_REVIEW.md`)**
+  - **Sicherheit (kritisch):** Strikte CSP, XSS-Schutz via `escapeHtml`, Passwort nicht mehr in Shell-Strings (`sudo_sh`-Helper, `child.stdin`), `unwrap()`-Pfade auf saubere Fehlerpropagation umgestellt, `ensure_disk_unmounted` vor Schreibzugriffen.
+  - **Concurrency/UI:** Singleton-Lock für Passwort-Modal, Frontend-Validierung von ISO-/Backup-Pfaden, `operation_id` an `progress`/`diagnose_progress`-Events (verspätete Events einer abgebrochenen Operation werden verworfen), Watchdog-Timeout auf `diskutil`-Mount-Roundtrip im Verify-Pfad.
+  - **Robustheit:** `diskutil … -plist` statt brittlem Text-Scraping in `is_removable_media`/`get_disk_details`, `tokio::time::sleep` in async-Kontexten, unnötige Passwort-Clones entfernt, DevTools im Release deaktiviert.
+  - **i18n:** Log-Ausgaben (`logBurn`/`logBackup`) in beide Sprachen lokalisiert (`logs.*`-Namespace), Disk-Listing-Meldungen folgen UI-Sprache.
+  - **Housekeeping:** `.gitignore` für sensitive Dateien, Debug-`eprintln!` nur noch unter `#[cfg(debug_assertions)]`, `cargo clippy` warnungsfrei.
 
 ### Version 1.3.1 (20.12.2024)
 - [x] **Erweiterte Forensik-Analyse**

@@ -11,6 +11,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   const { listen } = window.__TAURI__.event;
   const { open, save } = window.__TAURI__.dialog;
   const { getCurrentWindow, ProgressBarStatus } = window.__TAURI__.window;
+
+  // Sicheres HTML-Escaping für alle Backend-/User-Daten, die in innerHTML
+  // landen (siehe Code-Review K2 – verhindert XSS über Fehlertexte und
+  // Gerätenamen).
+  function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
   
   // Clipboard helper - use native API as fallback
   async function copyToClipboard(text) {
@@ -236,9 +249,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   const passwordCancelBtn = document.getElementById('password-cancel-btn');
   let passwordResolve = null;
   let passwordReject = null;
+  // W1: Singleton-Lock — verhindert mehrere parallele Passwort-Modale.
+  let passwordPromptActive = false;
 
   // Password dialog function - returns a Promise
   function requestPassword(promptText) {
+    if (passwordPromptActive) {
+      return Promise.reject('Passwortabfrage läuft bereits');
+    }
+    passwordPromptActive = true;
     return new Promise((resolve, reject) => {
       passwordResolve = resolve;
       passwordReject = reject;
@@ -260,6 +279,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     passwordResolve = null;
     passwordReject = null;
+    passwordPromptActive = false;
   });
 
   passwordCancelBtn.addEventListener('click', function() {
@@ -270,6 +290,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     passwordResolve = null;
     passwordReject = null;
+    passwordPromptActive = false;
   });
 
   // Handle Enter key in password input
@@ -520,7 +541,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (path && (path.toLowerCase().endsWith('.iso') || path.toLowerCase().endsWith('.img'))) {
       selectedIsoPath = path;
       isoPathInput.value = path;
-      logBurn('ISO file selected: ' + path.split('/').pop(), 'info');
+      logBurn(t('logs.isoSelected') + path.split('/').pop(), 'info');
       updateBurnButton();
       // Reset progress when selecting new file
       setDockProgress(0, 'none');
@@ -560,48 +581,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (paths && paths.length > 0) {
       const filePath = paths[0];
       if (setIsoFile(filePath)) {
-        logBurn('✓ ISO file dropped: ' + filePath.split('/').pop(), 'success');
+        logBurn(t('logs.isoDropped') + filePath.split('/').pop(), 'success');
       } else {
-        logBurn('⚠ Only .iso and .img files are supported', 'warning');
+        logBurn(t('logs.isoDropInvalid'), 'warning');
       }
     }
   });
 
   // Logging functions
-  function logBurn(message, type) {
+  // Generischer Log-Helper. Escaped die Nachricht, damit Backend-Texte mit
+  // HTML-Sonderzeichen (z. B. Datei-/Gerätenamen) keinen XSS auslösen.
+  function appendLog(target, message, type) {
     type = type || 'info';
     const timestamp = new Date().toLocaleTimeString();
-    burnLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
-    burnLog.scrollTop = burnLog.scrollHeight;
+    const span = document.createElement('span');
+    span.className = type;
+    span.textContent = '[' + timestamp + '] ' + message;
+    target.appendChild(span);
+    target.appendChild(document.createTextNode('\n'));
+    target.scrollTop = target.scrollHeight;
   }
 
-  function logBackup(message, type) {
-    type = type || 'info';
-    const timestamp = new Date().toLocaleTimeString();
-    backupLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
-    backupLog.scrollTop = backupLog.scrollHeight;
-  }
-
-  function logDiagnose(message, type) {
-    type = type || 'info';
-    const timestamp = new Date().toLocaleTimeString();
-    diagnoseLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
-    diagnoseLog.scrollTop = diagnoseLog.scrollHeight;
-  }
-
-  function logTools(message, type) {
-    type = type || 'info';
-    const timestamp = new Date().toLocaleTimeString();
-    toolsLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
-    toolsLog.scrollTop = toolsLog.scrollHeight;
-  }
-
-  function logForensic(message, type) {
-    type = type || 'info';
-    const timestamp = new Date().toLocaleTimeString();
-    forensicLog.innerHTML += '<span class="' + type + '">[' + timestamp + '] ' + message + '</span>\n';
-    forensicLog.scrollTop = forensicLog.scrollHeight;
-  }
+  function logBurn(message, type) { appendLog(burnLog, message, type); }
+  function logBackup(message, type) { appendLog(backupLog, message, type); }
+  function logDiagnose(message, type) { appendLog(diagnoseLog, message, type); }
+  function logTools(message, type) { appendLog(toolsLog, message, type); }
+  function logForensic(message, type) { appendLog(forensicLog, message, type); }
 
   // Reset burn state to initial (silent = no disk reload log)
   function resetBurnState(silent) {
@@ -683,7 +688,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
       
       if (disks.length === 0) {
-        logFn('No external USB drives found', 'warning');
+        logFn(t('messages.noUsbFound'), 'warning');
       } else {
         disks.forEach(function(disk) {
           const option = document.createElement('option');
@@ -691,11 +696,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           option.textContent = disk.id + ' - ' + disk.name + ' (' + disk.size + ')';
           selectElement.appendChild(option);
         });
-        logFn(disks.length + ' external USB drive(s) found', 'info');
+        logFn(disks.length + ' ' + t('messages.usbFound'), 'info');
       }
     } catch (err) {
       selectElement.innerHTML = '<option value="">' + window.i18n.t('burn.selectUsbPlaceholder') + '</option>';
-      logFn('Error: ' + err, 'error');
+      logFn(t('logs.errorPrefix') + err, 'error');
     }
     
     if (infoElement) infoElement.classList.remove('visible');
@@ -757,7 +762,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       infoElement.textContent = info;
       infoElement.classList.add('visible');
     } catch (err) {
-      logFn('Error loading disk info: ' + err, 'error');
+      logFn(t('logs.errorPrefix') + err, 'error');
     }
   }
 
@@ -811,7 +816,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (selected) {
         selectedIsoPath = selected;
         isoPathInput.value = selected;
-        logBurn('ISO selected: ' + selected, 'success');
+        logBurn(t('logs.isoSelected') + selected, 'success');
         updateBurnButton();
         // Reset progress when selecting new file
         setDockProgress(0, 'none');
@@ -824,7 +829,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (recentIsoSelect) recentIsoSelect.value = '';
       }
     } catch (err) {
-      logBurn('Selection error: ' + err, 'error');
+      logBurn(t('logs.selectionError') + err, 'error');
     }
   });
 
@@ -834,7 +839,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (recentIsoSelect.value) {
         selectedIsoPath = recentIsoSelect.value;
         isoPathInput.value = recentIsoSelect.value;
-        logBurn('ISO selected: ' + recentIsoSelect.value, 'success');
+        logBurn(t('logs.isoSelected') + recentIsoSelect.value, 'success');
         updateBurnButton();
         // Reset progress
         setDockProgress(0, 'none');
@@ -862,7 +867,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       burnPhase.textContent = '';
       burnPhase.className = 'phase-text';
       await showDiskInfo(selectedBurnDisk.id, burnDiskInfo, logBurn);
-      logBurn('USB selected: ' + selectedBurnDisk.name + ' (' + selectedBurnDisk.size + ')', 'info');
+      logBurn(t('logs.usbSelected') + selectedBurnDisk.name + ' (' + selectedBurnDisk.size + ')', 'info');
     } else {
       selectedBurnDisk = null;
       burnDiskInfo.classList.remove('visible');
@@ -873,6 +878,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   burnBtn.addEventListener('click', async function() {
     if (!selectedIsoPath || !selectedBurnDisk) return;
     
+    // W3: Frontend-Validierung des ISO-Pfads
+    const isoLower = String(selectedIsoPath).toLowerCase();
+    if (!isoLower.endsWith('.iso') && !isoLower.endsWith('.img')) {
+      logBurn(t('errors.invalidIsoExtension') || 'Invalid file: only .iso/.img are supported', 'error');
+      return;
+    }
+    if (selectedIsoPath.length < 5) {
+      logBurn(t('errors.invalidIsoPath') || 'Invalid ISO path', 'error');
+      return;
+    }
+    
     // Confirmation dialog
     const confirmed = await requestConfirm(
       '⚠️ WARNING!',
@@ -882,7 +898,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     );
     
     if (!confirmed) {
-      logBurn('Burn cancelled', 'warning');
+      logBurn(t('logs.burnCancelled'), 'warning');
       return;
     }
 
@@ -891,7 +907,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       password = await requestPassword('Zum Schreiben auf den USB-Stick werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
     } catch (err) {
-      logBurn('Password prompt cancelled', 'warning');
+      logBurn(t('logs.passwordCancelled'), 'warning');
       return;
     }
     
@@ -911,9 +927,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     burnPhase.textContent = 'Phase 1: Writing...';
     burnPhase.className = 'phase-text writing';
     
-    logBurn('Starting burn process...', 'info');
+    logBurn(t('logs.burnStarting'), 'info');
     if (doVerify) {
-      logBurn('Verification after burn enabled', 'info');
+      logBurn(t('logs.verifyEnabled'), 'info');
     }
     
     try {
@@ -947,11 +963,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (err) {
       // On cancel: Short message only
       if (burnCancelled) {
-        logBurn('✗ Burn cancelled', 'warning');
+        logBurn(t('logs.burnCancelledMark'), 'warning');
         burnPhase.textContent = 'Cancelled';
         burnPhase.className = 'phase-text error';
       } else {
-        logBurn('Error: ' + err, 'error');
+        logBurn(t('logs.errorPrefix') + err, 'error');
         burnPhase.textContent = 'Error!';
         burnPhase.className = 'phase-text error';
       }
@@ -964,9 +980,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     cancelBurnBtn.disabled = true;
     try {
       await invoke('cancel_burn');
-      logBurn('Cancelling...', 'warning');
+      logBurn(t('logs.cancelling'), 'warning');
     } catch (err) {
-      logBurn('Cancel error: ' + err, 'error');
+      logBurn(t('logs.cancelError') + err, 'error');
     }
   });
 
@@ -985,7 +1001,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       backupEta.textContent = '';
       await showDiskInfo(selectedBackupDisk.id, backupDiskInfo, logBackup);
       await checkVolumeInfo(selectedBackupDisk.id);
-      logBackup('USB selected: ' + selectedBackupDisk.name + ' (' + selectedBackupDisk.size + ')', 'info');
+      logBackup(t('logs.usbSelected') + selectedBackupDisk.name + ' (' + selectedBackupDisk.size + ')', 'info');
     } else {
       selectedBackupDisk = null;
       backupDiskInfo.classList.remove('visible');
@@ -1012,11 +1028,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (selected) {
         selectedBackupDestination = selected;
         backupDestinationInput.value = selected;
-        logBackup('Destination: ' + selected, 'success');
+        logBackup(t('logs.destinationSelected') + selected, 'success');
         updateBackupButton();
       }
     } catch (err) {
-      logBackup('Selection error: ' + err, 'error');
+      logBackup(t('logs.selectionError') + err, 'error');
     }
   });
 
@@ -1025,13 +1041,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     const isFilesystemMode = backupModeFilesystem.checked;
 
+    // W3: Backup-Ziel-Validierung
+    if (typeof selectedBackupDestination !== 'string' || selectedBackupDestination.length < 2) {
+      logBackup(t('errors.invalidBackupPath') || 'Invalid backup destination', 'error');
+      return;
+    }
+    if (!isFilesystemMode) {
+      const dstLower = selectedBackupDestination.toLowerCase();
+      if (!dstLower.endsWith('.img') && !dstLower.endsWith('.iso') && !dstLower.endsWith('.dmg')) {
+        logBackup(t('errors.invalidBackupExtension') || 'Backup destination must end in .img/.iso/.dmg', 'error');
+        return;
+      }
+    }
+
     // Passwort nur bei Raw-Modus abfragen (Filesystem braucht kein sudo)
     let password = null;
     if (!isFilesystemMode) {
       try {
         password = await requestPassword('Zum Lesen des USB-Sticks werden Administrator-Rechte benötigt.\n\nBitte geben Sie Ihr macOS-Passwort ein:');
       } catch (err) {
-        logBackup('Password prompt cancelled', 'warning');
+        logBackup(t('logs.passwordCancelled'), 'warning');
         return;
       }
     }
@@ -1045,7 +1074,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     backupProgressText.textContent = '0%';
     backupEta.textContent = '';
     
-    logBackup('Starting backup (' + (isFilesystemMode ? 'Filesystem' : 'Raw') + ')...', 'info');
+    logBackup(t('logs.backupStarting') + (isFilesystemMode ? t('logs.backupModeFs') : t('logs.backupModeRaw')) + ')...', 'info');
     
     try {
       let result;
@@ -1061,7 +1090,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let backupSize = selectedBackupDisk.bytes || 0;
         if (volumeInfo && volumeInfo.filesystem && volumeInfo.filesystem.startsWith('ISO:')) {
           backupSize = volumeInfo.bytes || backupSize;
-          logBackup('ISO image detected: Only ' + formatBytes(backupSize) + ' will be backed up (instead of ' + selectedBackupDisk.size + ')', 'info');
+          logBackup(t('logs.isoImageDetected') + formatBytes(backupSize) + t('logs.isoImageDetectedMid') + selectedBackupDisk.size + t('logs.isoImageDetectedEnd'), 'info');
         }
         
         result = await invoke('backup_usb_raw', {
@@ -1096,9 +1125,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (err) {
       // On cancel: Short message only
       if (backupCancelled) {
-        logBackup('✗ Backup cancelled', 'warning');
+        logBackup(t('logs.backupCancelled'), 'warning');
       } else {
-        logBackup('Error: ' + err, 'error');
+        logBackup(t('logs.errorPrefix') + err, 'error');
       }
       resetBackupState(true); // silent reset
     }
@@ -1109,9 +1138,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     cancelBackupBtn.disabled = true;
     try {
       await invoke('cancel_backup');
-      logBackup('Cancelling...', 'warning');
+      logBackup(t('logs.cancelling'), 'warning');
     } catch (err) {
-      logBackup('Cancel error: ' + err, 'error');
+      logBackup(t('logs.cancelError') + err, 'error');
     }
   });
 
@@ -1750,7 +1779,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (toolsDiskSelect.value) {
       selectedToolsDisk = JSON.parse(toolsDiskSelect.value);
       await showDiskInfo(selectedToolsDisk.id, toolsDiskInfo, logTools);
-      logTools('USB selected: ' + selectedToolsDisk.name + ' (' + selectedToolsDisk.size + ')', 'info');
+      logTools(t('logs.usbSelected') + selectedToolsDisk.name + ' (' + selectedToolsDisk.size + ')', 'info');
       formatBtn.disabled = false;
       repairBtn.disabled = false;
       secureEraseBtn.disabled = false;
@@ -2055,7 +2084,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       logTools(t('tools.bootAnalysis') + ': ' + result.boot_type, result.bootable ? 'success' : 'warning');
     } catch (err) {
       logTools(t('tools.bootError') + ': ' + err, 'error');
-      bootcheckResult.innerHTML = '<div class="bootcheck-error">' + t('messages.error') + ': ' + err + '</div>';
+      bootcheckResult.innerHTML = '<div class="bootcheck-error">' + escapeHtml(t('messages.error') + ': ' + err) + '</div>';
       bootcheckResult.classList.remove('hidden');
     }
   });
@@ -2066,7 +2095,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   forensicDiskSelect.addEventListener('change', async function() {
     if (forensicDiskSelect.value) {
       selectedForensicDisk = JSON.parse(forensicDiskSelect.value);
-      logForensic('USB ausgewählt: ' + selectedForensicDisk.name + ' (' + selectedForensicDisk.size + ')', 'info');
+      logForensic(t('logs.usbSelected') + selectedForensicDisk.name + ' (' + selectedForensicDisk.size + ')', 'info');
       forensicBtn.disabled = false;
     } else {
       selectedForensicDisk = null;
@@ -2107,12 +2136,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       lastForensicResult = result;
       
       // Build the forensic report HTML
+      // K2: kurzer Alias für escapeHtml — alle Backend-Strings müssen damit
+      // umhüllt werden, bevor sie in innerHTML eingebaut werden.
+      const eh = (v) => escapeHtml(v == null ? '' : String(v));
       let html = '<div class="forensic-report">';
       
       // Header with timestamp
       html += '<div class="forensic-header">';
       html += '<h4>🔬 ' + (t('tools.forensicTitle') || 'Forensik-Analyse') + '</h4>';
-      html += '<div class="forensic-timestamp">' + (t('tools.forensicTimestamp') || 'Zeitstempel') + ': ' + result.timestamp + '</div>';
+      html += '<div class="forensic-timestamp">' + (t('tools.forensicTimestamp') || 'Zeitstempel') + ': ' + eh(result.timestamp) + '</div>';
       html += '</div>';
       
       // Paragon Drivers Section (if available)
@@ -2140,7 +2172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const value = result.disk_info[key];
         // Skip "Not applicable" values from diskutil output
         if (value && !String(value).includes('Not applicable')) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + value + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + eh(key) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
         }
       }
       html += '</div></div>';
@@ -2151,12 +2183,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<h5>💾 ' + t('tools.forensicPartitions') + ' (' + result.partitions.length + ')</h5>';
         
         result.partitions.forEach((partition, idx) => {
-          const partId = partition.partition_id || `Partition ${idx + 1}`;
-          const volName = partition.volume_name || '-';
-          const fs = partition.filesystem || partition.partition_type || partition.content_type || '-';
-          const size = partition.size || '-';
-          const mountPoint = partition.mount_point || t('tools.notMounted');
-          const apfsContainer = partition.apfs_container || null;
+          const partId = eh(partition.partition_id || `Partition ${idx + 1}`);
+          const volName = eh(partition.volume_name || '-');
+          const fs = eh(partition.filesystem || partition.partition_type || partition.content_type || '-');
+          const size = eh(partition.size || '-');
+          const mountPoint = eh(partition.mount_point || t('tools.notMounted'));
+          const apfsContainer = partition.apfs_container ? eh(partition.apfs_container) : null;
           const apfsVolumes = partition.apfs_volumes || [];
           
           html += '<div class="forensic-partition" style="border: 1px solid #555; padding: 10px; margin: 5px 0; border-radius: 6px; background: rgba(0,0,0,0.15);">';
@@ -2177,10 +2209,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
           
           if (partition.used_space) {
-            html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.usedSpace') + ':</span> <span class="forensic-value">' + partition.used_space + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.usedSpace') + ':</span> <span class="forensic-value">' + eh(partition.used_space) + '</span></div>';
           }
           if (partition.free_space) {
-            html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.freeSpace') + ':</span> <span class="forensic-value">' + partition.free_space + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.freeSpace') + ':</span> <span class="forensic-value">' + eh(partition.free_space) + '</span></div>';
           }
           html += '</div>';
           
@@ -2189,11 +2221,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             html += '<div style="margin-top: 8px; padding-left: 15px; border-left: 2px solid #4fc3f7;">';
             html += '<strong style="color: #ffb74d; font-size: 0.9em;">📦 APFS Volumes (' + apfsVolumes.length + '):</strong>';
             apfsVolumes.forEach((vol) => {
-              const volId = vol.volume_id || '-';
-              const volNameApfs = vol.name || '-';
-              const volMount = vol.mount_point || t('tools.notMounted');
-              const volUsed = vol.used || '-';
-              const volFileVault = vol.filevault || '-';
+              const volId = eh(vol.volume_id || '-');
+              const volNameApfs = eh(vol.name || '-');
+              const volMount = eh(vol.mount_point || t('tools.notMounted'));
+              const volUsed = eh(vol.used || '-');
+              const volFileVault = eh(vol.filevault || '-');
               
               html += '<div style="margin: 5px 0; padding: 5px; background: rgba(0,0,0,0.1); border-radius: 4px;">';
               html += '<span style="color: #81c784;">📁 ' + volId + '</span> - <span style="color: #4fc3f7;">' + volNameApfs + '</span><br>';
@@ -2225,15 +2257,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (result.usb_info.devices && Array.isArray(result.usb_info.devices)) {
           result.usb_info.devices.forEach((device, idx) => {
             html += '<div class="forensic-usb-device" style="border: 1px solid #444; padding: 10px; margin: 5px 0; border-radius: 6px; background: rgba(0,0,0,0.2);">';
-            html += '<strong style="color: #4fc3f7;">📱 ' + t('tools.device') + ' ' + (idx + 1) + ': ' + (device.product_name || t('tools.unknown')) + '</strong><br>';
-            if (device.manufacturer) html += '<span class="forensic-label">' + t('tools.manufacturer') + ':</span> <span class="forensic-value">' + device.manufacturer + '</span><br>';
-            if (device.vendor_id) html += '<span class="forensic-label">Vendor ID:</span> <span class="forensic-value" style="font-family: monospace;">' + device.vendor_id + '</span><br>';
-            if (device.product_id) html += '<span class="forensic-label">Product ID:</span> <span class="forensic-value" style="font-family: monospace;">' + device.product_id + '</span><br>';
-            if (device.serial_number) html += '<span class="forensic-label">' + t('tools.serialNumber') + ':</span> <span class="forensic-value" style="font-family: monospace; font-size: 11px;">' + device.serial_number + '</span><br>';
-            if (device.usb_speed) html += '<span class="forensic-label">' + t('tools.usbSpeed') + ':</span> <span class="forensic-value" style="color: #4caf50;">' + device.usb_speed + '</span><br>';
-            if (device.power_allocation) html += '<span class="forensic-label">' + t('tools.powerConsumption') + ':</span> <span class="forensic-value">' + device.power_allocation + '</span><br>';
-            if (device.device_version) html += '<span class="forensic-label">' + t('tools.deviceVersion') + ':</span> <span class="forensic-value">' + device.device_version + '</span><br>';
-            if (device.location_id) html += '<span class="forensic-label">Location ID:</span> <span class="forensic-value" style="font-family: monospace;">' + device.location_id + '</span><br>';
+            html += '<strong style="color: #4fc3f7;">📱 ' + t('tools.device') + ' ' + (idx + 1) + ': ' + eh(device.product_name || t('tools.unknown')) + '</strong><br>';
+            if (device.manufacturer) html += '<span class="forensic-label">' + t('tools.manufacturer') + ':</span> <span class="forensic-value">' + eh(device.manufacturer) + '</span><br>';
+            if (device.vendor_id) html += '<span class="forensic-label">Vendor ID:</span> <span class="forensic-value" style="font-family: monospace;">' + eh(device.vendor_id) + '</span><br>';
+            if (device.product_id) html += '<span class="forensic-label">Product ID:</span> <span class="forensic-value" style="font-family: monospace;">' + eh(device.product_id) + '</span><br>';
+            if (device.serial_number) html += '<span class="forensic-label">' + t('tools.serialNumber') + ':</span> <span class="forensic-value" style="font-family: monospace; font-size: 11px;">' + eh(device.serial_number) + '</span><br>';
+            if (device.usb_speed) html += '<span class="forensic-label">' + t('tools.usbSpeed') + ':</span> <span class="forensic-value" style="color: #4caf50;">' + eh(device.usb_speed) + '</span><br>';
+            if (device.power_allocation) html += '<span class="forensic-label">' + t('tools.powerConsumption') + ':</span> <span class="forensic-value">' + eh(device.power_allocation) + '</span><br>';
+            if (device.device_version) html += '<span class="forensic-label">' + t('tools.deviceVersion') + ':</span> <span class="forensic-value">' + eh(device.device_version) + '</span><br>';
+            if (device.location_id) html += '<span class="forensic-label">Location ID:</span> <span class="forensic-value" style="font-family: monospace;">' + eh(device.location_id) + '</span><br>';
             html += '</div>';
           });
         } else {
@@ -2261,7 +2293,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           for (let key in result.usb_info) {
             if (result.usb_info[key] && typeof result.usb_info[key] !== 'object') {
               const label = usbLabels[key] || key;
-              html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + result.usb_info[key] + '</span></div>';
+              html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(result.usb_info[key]) + '</span></div>';
             }
           }
         }
@@ -2276,14 +2308,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (Array.isArray(result.partition_layout)) {
           result.partition_layout.forEach((p, i) => {
             html += '<div class="forensic-partition">';
-            html += '<strong>' + p.identifier + '</strong> (' + (p.size || 'N/A') + ')';
-            if (p.name) html += ' - ' + p.name;
-            if (p.type) html += ' [' + p.type + ']';
+            html += '<strong>' + eh(p.identifier) + '</strong> (' + eh(p.size || 'N/A') + ')';
+            if (p.name) html += ' - ' + eh(p.name);
+            if (p.type) html += ' [' + eh(p.type) + ']';
             html += '</div>';
           });
         } else if (typeof result.partition_layout === 'string' && result.partition_layout.trim()) {
           // diskutil list output as string - display as preformatted text
-          html += '<pre class="forensic-partition-raw">' + result.partition_layout + '</pre>';
+          html += '<pre class="forensic-partition-raw">' + eh(result.partition_layout) + '</pre>';
         }
         html += '</div></div>';
       }
@@ -2333,17 +2365,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (result.boot_info.is_iso9660) {
           html += '<div class="forensic-item"><span class="forensic-label">ISO 9660:</span> <span class="forensic-value">✓</span></div>';
           if (result.boot_info.iso_volume_label) {
-            html += '<div class="forensic-item"><span class="forensic-label">Volume Label:</span> <span class="forensic-value">' + result.boot_info.iso_volume_label + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">Volume Label:</span> <span class="forensic-value">' + eh(result.boot_info.iso_volume_label) + '</span></div>';
           }
           html += '<div class="forensic-item"><span class="forensic-label">El Torito:</span> <span class="forensic-value">' + (result.boot_info.has_el_torito_boot ? '✓' : '✗') + '</span></div>';
         }
         
         if (result.boot_info.mbr_partitions && result.boot_info.mbr_partitions !== 'none') {
-          html += '<div class="forensic-item full-width"><span class="forensic-label">MBR-Partitionen:</span> <span class="forensic-value">' + result.boot_info.mbr_partitions + '</span></div>';
+          html += '<div class="forensic-item full-width"><span class="forensic-label">MBR-Partitionen:</span> <span class="forensic-value">' + eh(result.boot_info.mbr_partitions) + '</span></div>';
         }
         
         if (result.boot_info.gpt_disk_guid) {
-          html += '<div class="forensic-item full-width"><span class="forensic-label">GPT Disk GUID:</span> <span class="forensic-value mono">' + result.boot_info.gpt_disk_guid + '</span></div>';
+          html += '<div class="forensic-item full-width"><span class="forensic-label">GPT Disk GUID:</span> <span class="forensic-value mono">' + eh(result.boot_info.gpt_disk_guid) + '</span></div>';
         }
         
         html += '</div></div>';
@@ -2361,14 +2393,14 @@ document.addEventListener('DOMContentLoaded', async () => {
           fsSignatures.forEach(fs => {
             if (typeof fs === 'string') {
               html += '<div class="forensic-fs-item">';
-              html += '<span class="fs-name">' + fs + '</span>';
+              html += '<span class="fs-name">' + eh(fs) + '</span>';
               html += '</div>';
             } else if (typeof fs === 'object') {
               // Old format with filesystem, offset, label
               html += '<div class="forensic-fs-item">';
-              html += '<span class="fs-name">' + fs.filesystem + '</span>';
-              if (fs.offset) html += ' @ Offset ' + fs.offset;
-              if (fs.label) html += ' - Label: "' + fs.label + '"';
+              html += '<span class="fs-name">' + eh(fs.filesystem) + '</span>';
+              if (fs.offset) html += ' @ Offset ' + eh(fs.offset);
+              if (fs.label) html += ' - Label: "' + eh(fs.label) + '"';
               html += '</div>';
             }
           });
@@ -2382,17 +2414,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<h5>📁 ' + (t('tools.forensicContent') || 'Inhaltsanalyse') + '</h5>';
         html += '<div class="forensic-grid">';
         if (result.content_analysis.mount_point) {
-          html += '<div class="forensic-item"><span class="forensic-label">Mount:</span> <span class="forensic-value">' + result.content_analysis.mount_point + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">Mount:</span> <span class="forensic-value">' + eh(result.content_analysis.mount_point) + '</span></div>';
         }
         if (result.content_analysis.total_items !== undefined) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.forensicTotalItems') + ':</span> <span class="forensic-value">' + result.content_analysis.total_items + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.forensicTotalItems') + ':</span> <span class="forensic-value">' + eh(result.content_analysis.total_items) + '</span></div>';
         }
         if (result.content_analysis.detected_os && result.content_analysis.detected_os.length > 0) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.forensicDetectedOS') + ':</span> <span class="forensic-value">' + result.content_analysis.detected_os.join(', ') + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.forensicDetectedOS') + ':</span> <span class="forensic-value">' + eh(result.content_analysis.detected_os.join(', ')) + '</span></div>';
         }
         if (result.content_analysis.top_level && result.content_analysis.top_level.length > 0) {
           html += '<div class="forensic-item full-width"><span class="forensic-label">' + t('tools.forensicTopLevel') + ':</span></div>';
-          html += '<div class="forensic-toplevel">' + result.content_analysis.top_level.map(f => '<span class="toplevel-item">' + f + '</span>').join('') + '</div>';
+          html += '<div class="forensic-toplevel">' + result.content_analysis.top_level.map(f => '<span class="toplevel-item">' + eh(f) + '</span>').join('') + '</div>';
         }
         html += '</div></div>';
       }
@@ -2403,7 +2435,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<h5>🔎 ' + t('tools.forensicSpecial') + '</h5>';
         html += '<div class="forensic-grid">';
         for (let key in result.special_structures) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + key + ':</span> <span class="forensic-value">' + (result.special_structures[key] ? '✓' : '✗') + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + eh(key) + ':</span> <span class="forensic-value">' + (result.special_structures[key] ? '✓' : '✗') + '</span></div>';
         }
         html += '</div></div>';
       }
@@ -2414,7 +2446,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<h5>🔧 ' + (t('tools.forensicHardwareInfo') || 'Hardware-Details') + '</h5>';
         html += '<div class="forensic-grid">';
         for (let key in result.hardware_info) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + key.replace(/_/g, ' ') + ':</span> <span class="forensic-value">' + result.hardware_info[key] + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + eh(key.replace(/_/g, ' ')) + ':</span> <span class="forensic-value">' + eh(result.hardware_info[key]) + '</span></div>';
         }
         html += '</div></div>';
       }
@@ -2425,7 +2457,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<h5>🎛️ ' + (t('tools.forensicController') || 'USB-Controller') + '</h5>';
         html += '<div class="forensic-grid">';
         for (let key in result.controller_info) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + key.replace(/_/g, ' ') + ':</span> <span class="forensic-value">' + result.controller_info[key] + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + eh(key.replace(/_/g, ' ')) + ':</span> <span class="forensic-value">' + eh(result.controller_info[key]) + '</span></div>';
         }
         html += '</div></div>';
       }
@@ -2441,7 +2473,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (key.includes('bytes') && typeof value === 'number') {
             value = formatBytes(value);
           }
-          html += '<div class="forensic-item"><span class="forensic-label">' + key.replace(/_/g, ' ') + ':</span> <span class="forensic-value">' + value + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + eh(key.replace(/_/g, ' ')) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
         }
         html += '</div></div>';
       }
@@ -2451,9 +2483,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<div class="forensic-section">';
         html += '<h5>📊 ' + (t('tools.forensicActivity') || 'Disk-Aktivität') + '</h5>';
         html += '<div class="forensic-grid">';
-        html += '<div class="forensic-item"><span class="forensic-label">KB/Transfer:</span> <span class="forensic-value">' + result.disk_activity.kb_per_transfer + '</span></div>';
-        html += '<div class="forensic-item"><span class="forensic-label">Transfers/s:</span> <span class="forensic-value">' + result.disk_activity.transfers_per_sec + '</span></div>';
-        html += '<div class="forensic-item"><span class="forensic-label">MB/s:</span> <span class="forensic-value">' + result.disk_activity.mb_per_sec + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">KB/Transfer:</span> <span class="forensic-value">' + eh(result.disk_activity.kb_per_transfer) + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">Transfers/s:</span> <span class="forensic-value">' + eh(result.disk_activity.transfers_per_sec) + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">MB/s:</span> <span class="forensic-value">' + eh(result.disk_activity.mb_per_sec) + '</span></div>';
         html += '</div></div>';
       }
       
@@ -2462,15 +2494,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<div class="forensic-section">';
         html += '<h5>📀 ' + (t('tools.forensicMbrAnalysis') || 'MBR-Analyse') + '</h5>';
         html += '<div class="forensic-grid">';
-        html += '<div class="forensic-item"><span class="forensic-label">MBR-Signatur:</span> <span class="forensic-value">' + result.mbr_analysis.mbr_signature + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">MBR-Signatur:</span> <span class="forensic-value">' + eh(result.mbr_analysis.mbr_signature) + '</span></div>';
         html += '<div class="forensic-item"><span class="forensic-label">Gültig:</span> <span class="forensic-value">' + (result.mbr_analysis.valid_mbr ? '✓ Ja' : '✗ Nein') + '</span></div>';
         html += '</div>';
         if (result.mbr_analysis.partition_entries && result.mbr_analysis.partition_entries.length > 0) {
           html += '<div class="forensic-partitions" style="margin-top:8px;">';
           result.mbr_analysis.partition_entries.forEach(p => {
             html += '<div class="forensic-partition">';
-            html += '<strong>Partition ' + p.number + '</strong>';
-            html += ' [' + p.type_hex + '] ' + p.type_name;
+            html += '<strong>Partition ' + eh(p.number) + '</strong>';
+            html += ' [' + eh(p.type_hex) + '] ' + eh(p.type_name);
             if (p.bootable) html += ' 🚀 Boot';
             html += '</div>';
           });
@@ -2484,10 +2516,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<div class="forensic-section">';
         html += '<h5>📦 ' + (t('tools.forensicGptAnalysis') || 'GPT-Analyse') + '</h5>';
         html += '<div class="forensic-grid">';
-        html += '<div class="forensic-item"><span class="forensic-label">GPT-Signatur:</span> <span class="forensic-value">' + result.gpt_analysis.gpt_signature + '</span></div>';
+        html += '<div class="forensic-item"><span class="forensic-label">GPT-Signatur:</span> <span class="forensic-value">' + eh(result.gpt_analysis.gpt_signature) + '</span></div>';
         html += '<div class="forensic-item"><span class="forensic-label">Gültig:</span> <span class="forensic-value">' + (result.gpt_analysis.valid_gpt ? '✓ Ja' : '✗ Nein') + '</span></div>';
         if (result.gpt_analysis.gpt_revision) {
-          html += '<div class="forensic-item"><span class="forensic-label">Revision:</span> <span class="forensic-value">' + result.gpt_analysis.gpt_revision + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">Revision:</span> <span class="forensic-value">' + eh(result.gpt_analysis.gpt_revision) + '</span></div>';
         }
         html += '</div></div>';
       }
@@ -2498,22 +2530,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<h5>📁 ' + t('tools.forensicFsDetails') + '</h5>';
         html += '<div class="forensic-grid">';
         if (result.filesystem_details.total_file_count) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + t('forensic.files') + ':</span> <span class="forensic-value">' + result.filesystem_details.total_file_count + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('forensic.files') + ':</span> <span class="forensic-value">' + eh(result.filesystem_details.total_file_count) + '</span></div>';
         }
         if (result.filesystem_details.directory_count) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.directories') + ':</span> <span class="forensic-value">' + result.filesystem_details.directory_count + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.directories') + ':</span> <span class="forensic-value">' + eh(result.filesystem_details.directory_count) + '</span></div>';
         }
         if (result.filesystem_details.hidden_files_count) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.hiddenFiles') + ':</span> <span class="forensic-value">' + result.filesystem_details.hidden_files_count + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.hiddenFiles') + ':</span> <span class="forensic-value">' + eh(result.filesystem_details.hidden_files_count) + '</span></div>';
         }
         if (result.filesystem_details.symlink_count) {
-          html += '<div class="forensic-item"><span class="forensic-label">Symlinks:</span> <span class="forensic-value">' + result.filesystem_details.symlink_count + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">Symlinks:</span> <span class="forensic-value">' + eh(result.filesystem_details.symlink_count) + '</span></div>';
         }
         if (result.filesystem_details.capacity_percent) {
-          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.capacity') + ':</span> <span class="forensic-value">' + result.filesystem_details.capacity_percent + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">' + t('tools.capacity') + ':</span> <span class="forensic-value">' + eh(result.filesystem_details.capacity_percent) + '</span></div>';
         }
         if (result.filesystem_details.inode_usage_percent) {
-          html += '<div class="forensic-item"><span class="forensic-label">Inode-Nutzung:</span> <span class="forensic-value">' + result.filesystem_details.inode_usage_percent + '</span></div>';
+          html += '<div class="forensic-item"><span class="forensic-label">Inode-Nutzung:</span> <span class="forensic-value">' + eh(result.filesystem_details.inode_usage_percent) + '</span></div>';
         }
         html += '</div>';
         
@@ -2523,7 +2555,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           html += '<div class="forensic-filelist">';
           result.filesystem_details.largest_files.forEach(f => {
             const sizeFormatted = formatBytes(parseInt(f.size_bytes) || 0);
-            html += '<div class="forensic-file-item"><span class="file-size">' + sizeFormatted + '</span> <span class="file-path">' + f.path + '</span></div>';
+            html += '<div class="forensic-file-item"><span class="file-size">' + eh(sizeFormatted) + '</span> <span class="file-path">' + eh(f.path) + '</span></div>';
           });
           html += '</div></div>';
         }
@@ -2533,7 +2565,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           html += '<div class="forensic-subsection"><strong>' + (t('tools.forensicFileTypes') || 'Dateitypen') + ':</strong>';
           html += '<div class="forensic-types">';
           result.filesystem_details.file_type_distribution.forEach(ft => {
-            html += '<span class="forensic-type-badge">' + ft.extension + ' (' + ft.count + ')</span>';
+            html += '<span class="forensic-type-badge">' + eh(ft.extension) + ' (' + eh(ft.count) + ')</span>';
           });
           html += '</div></div>';
         }
@@ -2543,7 +2575,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           html += '<div class="forensic-subsection"><strong>' + (t('tools.forensicRecent') || 'Kürzlich geändert (7 Tage)') + ':</strong>';
           html += '<div class="forensic-filelist">';
           result.filesystem_details.recently_modified.forEach(f => {
-            html += '<div class="forensic-file-item"><span class="file-path">' + f + '</span></div>';
+            html += '<div class="forensic-file-item"><span class="file-path">' + eh(f) + '</span></div>';
           });
           html += '</div></div>';
         }
@@ -2652,7 +2684,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               value = yesNo(value);
             }
             const label = smartLabels[key] || key.replace(/_/g, ' ');
-            html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
           }
         }
         html += '</div>';
@@ -2667,7 +2699,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.smart_info[key] !== undefined) {
               let value = result.smart_info[key];
               const label = smartLabels[key] || key.replace(/_/g, ' ');
-              html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
+              html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
             }
           }
           html += '</div>';
@@ -2687,7 +2719,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 value = yesNo(value);
               }
               const label = smartLabels[key] || key.replace(/_/g, ' ');
-              html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
+              html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
             }
           }
           html += '</div>';
@@ -2704,7 +2736,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.smart_info[key] !== undefined) {
               let value = result.smart_info[key];
               const label = smartLabels[key] || key.replace(/_/g, ' ');
-              html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
+              html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
             }
           }
           html += '</div>';
@@ -2721,7 +2753,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.smart_info[key] !== undefined) {
               let value = result.smart_info[key];
               const label = smartLabels[key] || key.replace(/_/g, ' ');
-              html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
+              html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
             }
           }
           html += '</div>';
@@ -2738,7 +2770,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.smart_info[key] !== undefined) {
               let value = result.smart_info[key];
               const label = smartLabels[key] || key.replace(/_/g, ' ');
-              html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
+              html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
             }
           }
           html += '</div>';
@@ -2754,7 +2786,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.smart_info[key] !== undefined) {
               let value = result.smart_info[key];
               const label = smartLabels[key] || key.replace(/_/g, ' ');
-              html += '<div class="forensic-item"><span class="forensic-label">' + label + ':</span> <span class="forensic-value">' + value + '</span></div>';
+              html += '<div class="forensic-item"><span class="forensic-label">' + eh(label) + ':</span> <span class="forensic-value">' + eh(value) + '</span></div>';
             }
           }
           html += '</div>';
@@ -2774,13 +2806,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const status = isPrefailure ? '⚠️ Pre-fail' : '✅ OK';
             
             html += '<tr class="' + rowClass + '">';
-            html += '<td>' + (attr.id || '-') + '</td>';
-            html += '<td>' + (attr.name || '-') + '</td>';
-            html += '<td>' + (attr.value !== undefined ? attr.value : '-') + '</td>';
-            html += '<td>' + (attr.worst !== undefined ? attr.worst : '-') + '</td>';
-            html += '<td>' + (attr.threshold !== undefined ? attr.threshold : '-') + '</td>';
-            html += '<td>' + (attr.raw_value !== undefined ? attr.raw_value : '-') + '</td>';
-            html += '<td>' + (attr.flags || '-') + '</td>';
+            html += '<td>' + eh(attr.id || '-') + '</td>';
+            html += '<td>' + eh(attr.name || '-') + '</td>';
+            html += '<td>' + eh(attr.value !== undefined ? attr.value : '-') + '</td>';
+            html += '<td>' + eh(attr.worst !== undefined ? attr.worst : '-') + '</td>';
+            html += '<td>' + eh(attr.threshold !== undefined ? attr.threshold : '-') + '</td>';
+            html += '<td>' + eh(attr.raw_value !== undefined ? attr.raw_value : '-') + '</td>';
+            html += '<td>' + eh(attr.flags || '-') + '</td>';
             html += '<td>' + status + '</td>';
             html += '</tr>';
           }
@@ -2797,7 +2829,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           
           for (let attrKey in result.smart_info.attributes) {
             const attrLabel = smartLabels[attrKey] || attrKey.replace(/_/g, ' ');
-            html += '<div class="forensic-item"><span class="forensic-label">' + attrLabel + ':</span> <span class="forensic-value">' + result.smart_info.attributes[attrKey] + '</span></div>';
+            html += '<div class="forensic-item"><span class="forensic-label">' + eh(attrLabel) + ':</span> <span class="forensic-value">' + eh(result.smart_info.attributes[attrKey]) + '</span></div>';
           }
           
           html += '</div></div>';
@@ -2805,7 +2837,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Data source
         if (result.smart_info.source) {
-          html += '<div class="forensic-item" style="margin-top: 10px; font-size: 0.85em; opacity: 0.7;"><span class="forensic-label">' + t('tools.dataSource') + ':</span> <span class="forensic-value">' + result.smart_info.source + '</span></div>';
+          html += '<div class="forensic-item" style="margin-top: 10px; font-size: 0.85em; opacity: 0.7;"><span class="forensic-label">' + t('tools.dataSource') + ':</span> <span class="forensic-value">' + eh(result.smart_info.source) + '</span></div>';
         }
         
         html += '</div>';
@@ -2817,10 +2849,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<h5>🔐 ' + t('tools.forensicChecksums') + '</h5>';
         html += '<div class="forensic-grid">';
         if (result.sector_checksums.mbr_md5) {
-          html += '<div class="forensic-item full-width"><span class="forensic-label">MD5:</span> <span class="forensic-value mono">' + result.sector_checksums.mbr_md5 + '</span></div>';
+          html += '<div class="forensic-item full-width"><span class="forensic-label">MD5:</span> <span class="forensic-value mono">' + eh(result.sector_checksums.mbr_md5) + '</span></div>';
         }
         if (result.sector_checksums.mbr_sha256) {
-          html += '<div class="forensic-item full-width"><span class="forensic-label">SHA256:</span> <span class="forensic-value mono">' + result.sector_checksums.mbr_sha256 + '</span></div>';
+          html += '<div class="forensic-item full-width"><span class="forensic-label">SHA256:</span> <span class="forensic-value mono">' + eh(result.sector_checksums.mbr_sha256) + '</span></div>';
         }
         html += '</div></div>';
       }
@@ -2829,7 +2861,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (result.raw_header_hex) {
         html += '<div class="forensic-section">';
         html += '<h5>🔢 ' + (t('tools.forensicRawHeader') || 'Raw Header (Hex)') + '</h5>';
-        html += '<pre class="forensic-hexdump">' + result.raw_header_hex + '</pre>';
+        html += '<pre class="forensic-hexdump">' + eh(result.raw_header_hex) + '</pre>';
         html += '</div>';
       }
       
@@ -2852,15 +2884,15 @@ document.addEventListener('DOMContentLoaded', async () => {
           <div class="forensic-error" style="background: #ffebee; border: 2px solid #f44336; padding: 20px; border-radius: 8px; text-align: center;">
             <div style="font-size: 48px; margin-bottom: 10px;">🔐</div>
             <div style="color: #c62828; font-weight: bold; font-size: 18px; margin-bottom: 10px;">
-              ${t('tools.forensicWrongPassword') || 'Falsches Passwort'}
+              ${escapeHtml(t('tools.forensicWrongPassword') || 'Falsches Passwort')}
             </div>
             <div style="color: #333;">
-              ${t('tools.forensicPasswordHint') || 'Bitte geben Sie Ihr Administrator-Passwort korrekt ein und versuchen Sie es erneut.'}
+              ${escapeHtml(t('tools.forensicPasswordHint') || 'Bitte geben Sie Ihr Administrator-Passwort korrekt ein und versuchen Sie es erneut.')}
             </div>
           </div>`;
       } else {
         logForensic((t('tools.forensicError') || 'Forensik-Analyse Fehler') + ': ' + err, 'error');
-        forensicResult.innerHTML = '<div class="forensic-error">' + t('messages.error') + ': ' + err + '</div>';
+        forensicResult.innerHTML = '<div class="forensic-error">' + escapeHtml(t('messages.error') + ': ' + err) + '</div>';
       }
       forensicResult.classList.remove('hidden');
     } finally {
@@ -3444,8 +3476,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // W5: aktuelle Operation-ID für Filterung verspaeteter Events einer abgebrochenen/vorherigen Operation
+  let currentOperationId = 0;
+  listen('operation_start', function(event) {
+    const id = typeof event.payload === 'number' ? event.payload : Number(event.payload);
+    if (!Number.isNaN(id)) currentOperationId = id;
+  });
+
   // Listen for progress events
   listen('progress', function(event) {
+    // W5: verspaetete Events einer alten Operation verwerfen
+    if (typeof event.payload.operation_id === 'number' && event.payload.operation_id < currentOperationId) {
+      return;
+    }
     const percent = event.payload.percent;
     const status = event.payload.status;
     const operation = event.payload.operation;
@@ -3489,7 +3532,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Reset start time for accurate ETA in verify phase
       burnStartTime = Date.now();
       burnEta.textContent = '';
-      logBurn('Starting verification...', 'info');
+      logBurn(t('logs.verifyStarting'), 'info');
     } else if (phase === 'success') {
       burnPhase.textContent = '✓ Successfully completed!';
       burnPhase.className = 'phase-text success';
@@ -3509,6 +3552,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Listen for diagnose progress events
   listen('diagnose_progress', function(event) {
     const payload = event.payload;
+    // W5: verspaetete Events einer alten Operation verwerfen
+    if (typeof payload.operation_id === 'number' && payload.operation_id < currentOperationId) {
+      return;
+    }
     diagnoseProgressFill.style.width = payload.percent + '%';
     diagnoseProgressText.textContent = payload.percent + '%';
     diagnoseEta.textContent = calculateEta(diagnoseStartTime, payload.percent);
@@ -3661,8 +3708,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Initialize
-  logBurn('BurnISO to USB ready', 'info');
-  logBackup('USB Backup ready', 'info');
+  logBurn(t('logs.appReady'), 'info');
+  logBackup(t('logs.backupReady'), 'info');
   logDiagnose(t('diagnose.ready'), 'info');
   loadDisks(burnDiskSelect, burnDiskInfo, logBurn);
   loadDisks(backupDiskSelect, backupDiskInfo, logBackup);

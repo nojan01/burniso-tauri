@@ -142,8 +142,8 @@
 </head>
 <body>
   <div class="lang-switch">
-    <button class="lang-btn active" onclick="switchLang('de')">🇩🇪 Deutsch</button>
-    <button class="lang-btn" onclick="switchLang('en')">🇬🇧 English</button>
+    <button class="lang-btn active" data-lang="de">🇩🇪 Deutsch</button>
+    <button class="lang-btn" data-lang="en">🇬🇧 English</button>
   </div>
 
   <!-- GERMAN -->
@@ -483,13 +483,6 @@
     </div>
   </div>
 
-  <script>
-    function switchLang(lang) {
-      document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
-      document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-      document.getElementById('content-' + lang).classList.add('active');
-      document.querySelector('.lang-btn[onclick*="' + lang + '"]').classList.add('active');
-    }
-  </script>
+  <script src="help.js"></script>
 </body>
 </html>

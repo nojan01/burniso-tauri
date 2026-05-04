@@ -4,9 +4,107 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem, AboutMetadata};
+
+/// Prüft, ob eine Disk noch gemountete Volumes hat. Wird vor destruktiven
+/// Schreibvorgängen aufgerufen, damit ein fehlgeschlagenes `unmountDisk`
+/// nicht stillschweigend zu Datenverlust auf einer noch gemounteten
+/// Partition führt (siehe Code-Review K5).
+fn is_disk_mounted(disk_id: &str) -> bool {
+    let output = match Command::new("diskutil").args(["info", "-plist", disk_id]).output() {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    let plist = String::from_utf8_lossy(&output.stdout);
+    // "MountPoint" wird im plist als <string>…</string> direkt nach dem Key gelistet.
+    // Ein nicht gemountetes Volume hat einen leeren String oder fehlt.
+    let mut iter = plist.split("<key>MountPoint</key>");
+    let _ = iter.next();
+    for rest in iter {
+        if let Some(start) = rest.find("<string>") {
+            if let Some(end) = rest[start + 8..].find("</string>") {
+                let mp = &rest[start + 8..start + 8 + end];
+                if !mp.trim().is_empty() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Führt ein Shell-Skript unter `sudo -S sh -c …` aus und übergibt das
+/// Passwort ausschließlich über stdin (siehe Code-Review K3). Verhindert,
+/// dass das Passwort im Prozess-Listing oder in `format!`-Strings
+/// erscheint und beseitigt die fragile Quoting-Logik mit `'\''`.
+fn sudo_sh(password: &str, script: &str) -> std::io::Result<std::process::Output> {
+    let mut child = Command::new("sudo")
+        .args(["-S", "sh", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // Newline beendet die sudo-Eingabe; Fehler ignorieren, falls
+        // sudo bereits cached war und stdin schließt.
+        let _ = stdin.write_all(password.as_bytes());
+        let _ = stdin.write_all(b"\n");
+    }
+    child.wait_with_output()
+}
+
+/// W4: Externes Kommando mit Watchdog-Timeout ausfuehren. Fuer kurze Hilfskommandos
+/// (z. B. `diskutil mountDisk/unmountDisk` im Verify-Pfad), die theoretisch haengen
+/// koennen. Bei Ablauf des Timeouts wird der Prozess gekillt und ein TimedOut-Fehler
+/// zurueckgegeben.
+fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> std::io::Result<std::process::Output> {
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(_status) = child.try_wait()? {
+            return child.wait_with_output();
+        }
+        if start.elapsed().as_secs() >= timeout_secs {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{} timed out after {}s", cmd, timeout_secs),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Versucht alle Partitionen einer Disk auszuhängen und meldet Fehler an
+/// das Frontend. Gibt einen Fehler zurück, wenn die Disk anschließend
+/// immer noch gemountet ist (verhindert Schreibzugriff auf gemountete FS).
+fn ensure_disk_unmounted(app: &AppHandle, disk_id: &str) -> Result<(), String> {
+    let disk_path = format!("/dev/{}", disk_id);
+    let output = Command::new("diskutil")
+        .args(["unmountDisk", "force", &disk_path])
+        .output()
+        .map_err(|e| format!("diskutil unmountDisk konnte nicht gestartet werden: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = app.emit("log", format!("Warnung: unmountDisk meldete Fehler: {}", stderr.trim()));
+    }
+
+    if is_disk_mounted(disk_id) {
+        return Err(format!(
+            "Disk {} ist nach unmountDisk noch gemountet – Abbruch zum Schutz vor Datenverlust.",
+            disk_id
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DiskInfo {
@@ -30,6 +128,7 @@ pub struct ProgressEvent {
     pub percent: u32,
     pub status: String,
     pub operation: String,
+    pub operation_id: u64,
 }
 
 /// Detected filesystem information from raw device reading
@@ -122,8 +221,8 @@ fn detect_filesystem_from_device(disk_id: &str) -> Option<DetectedFilesystem> {
     // 6. ISO 9660: "CD001" at offset 32769 (0x8001) - need to read more
     if let Ok(mut f) = File::open(&device_path) {
         let mut iso_buf = vec![0u8; 6];
-        if f.seek(SeekFrom::Start(0x8001)).is_ok() && f.read_exact(&mut iso_buf).is_ok() {
-            if &iso_buf[0..5] == b"CD001" {
+        if f.seek(SeekFrom::Start(0x8001)).is_ok() && f.read_exact(&mut iso_buf).is_ok()
+            && &iso_buf[0..5] == b"CD001" {
                 let iso_size = extract_iso_size(&device_path);
                 return Some(DetectedFilesystem {
                     name: "ISO 9660".to_string(),
@@ -132,14 +231,13 @@ fn detect_filesystem_from_device(disk_id: &str) -> Option<DetectedFilesystem> {
                     total_bytes: iso_size,
                 });
             }
-        }
     }
     
     // 7. Btrfs: "_BHRfS_M" at offset 0x10040
     if let Ok(mut f) = File::open(&device_path) {
         let mut btrfs_buf = vec![0u8; 8];
-        if f.seek(SeekFrom::Start(0x10040)).is_ok() && f.read_exact(&mut btrfs_buf).is_ok() {
-            if &btrfs_buf == b"_BHRfS_M" {
+        if f.seek(SeekFrom::Start(0x10040)).is_ok() && f.read_exact(&mut btrfs_buf).is_ok()
+            && &btrfs_buf == b"_BHRfS_M" {
                 return Some(DetectedFilesystem {
                     name: "Btrfs".to_string(),
                     label: None,
@@ -147,7 +245,6 @@ fn detect_filesystem_from_device(disk_id: &str) -> Option<DetectedFilesystem> {
                     total_bytes: None,
                 });
             }
-        }
     }
     
     // 8. XFS: "XFSB" at offset 0
@@ -403,6 +500,15 @@ static CANCEL_BURN: AtomicBool = AtomicBool::new(false);
 static CANCEL_BACKUP: AtomicBool = AtomicBool::new(false);
 static CANCEL_DIAGNOSE: AtomicBool = AtomicBool::new(false);
 
+// W5: monoton steigender Operation-Counter. Beim Start jeder Top-Level-Operation
+// um 1 erhöht; Events tragen diese ID, das Frontend ignoriert verspaetete Events
+// einer abgebrochenen/vorherigen Operation.
+static CURRENT_OPERATION_ID: AtomicU64 = AtomicU64::new(0);
+
+fn start_operation() -> u64 {
+    CURRENT_OPERATION_ID.fetch_add(1, Ordering::SeqCst) + 1
+}
+
 /// SMART data structure - Extended with all smartctl -x data
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SmartData {
@@ -484,6 +590,7 @@ pub struct DiagnoseProgressEvent {
     pub errors_found: u64,
     pub read_speed_mbps: f64,
     pub write_speed_mbps: f64,
+    pub operation_id: u64,
 }
 
 /// Diagnose result
@@ -765,7 +872,7 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
     let smartctl_path = get_smartctl_path()?;
     
     let device_path = format!("/dev/{}", disk_id);
-    eprintln!("[SMART Debug] Checking disk: {} with smartctl: {}", device_path, smartctl_path);
+    #[cfg(debug_assertions)] eprintln!("[SMART Debug] Checking disk: {} with smartctl: {}", device_path, smartctl_path);
     
     // First, quick check if SMART is supported at all (fast command)
     let info_output = Command::new(&smartctl_path)
@@ -776,7 +883,7 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
     let info_text = String::from_utf8_lossy(&info_output.stdout);
     let info_stderr = String::from_utf8_lossy(&info_output.stderr);
     
-    eprintln!("[SMART Debug] -i output contains 'SMART support': {}", info_text.contains("SMART support is:"));
+    #[cfg(debug_assertions)] eprintln!("[SMART Debug] -i output contains 'SMART support': {}", info_text.contains("SMART support is:"));
     
     // Check for common indicators that SMART is not supported
     if info_text.contains("Unknown USB bridge") 
@@ -784,18 +891,18 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
         || info_stderr.contains("Unable to detect device type")
         || info_stderr.contains("Unknown USB bridge")
         || (!info_text.contains("SMART support is:") && !info_text.contains("SMART Health Status")) {
-        eprintln!("[SMART Debug] SMART not supported (early check failed)");
+        #[cfg(debug_assertions)] eprintln!("[SMART Debug] SMART not supported (early check failed)");
         return None;
     }
     
     // Check if SMART is explicitly unavailable
     if info_text.contains("SMART support is: Unavailable") 
         || info_text.contains("Device does not support SMART") {
-        eprintln!("[SMART Debug] SMART explicitly unavailable");
+        #[cfg(debug_assertions)] eprintln!("[SMART Debug] SMART explicitly unavailable");
         return None;
     }
     
-    eprintln!("[SMART Debug] Running smartctl -x -j ...");
+    #[cfg(debug_assertions)] eprintln!("[SMART Debug] Running smartctl -x -j ...");
     
     // Run smartctl -x -j (extended info with JSON output) for full data
     let output = Command::new(&smartctl_path)
@@ -804,16 +911,16 @@ fn try_smartctl(disk_id: &str) -> Option<SmartData> {
         .ok()?;
     
     let stdout = String::from_utf8_lossy(&output.stdout);
-    eprintln!("[SMART Debug] Got {} bytes of JSON output", stdout.len());
+    #[cfg(debug_assertions)] eprintln!("[SMART Debug] Got {} bytes of JSON output", stdout.len());
     
     // Parse JSON output
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-        eprintln!("[SMART Debug] JSON parsed successfully");
+        #[cfg(debug_assertions)] eprintln!("[SMART Debug] JSON parsed successfully");
         
         // Check if device type is recognized
         let device_type_val = json.get("device").and_then(|d| d.get("type")).and_then(|t| t.as_str());
         if device_type_val == Some("unknown") {
-            eprintln!("[SMART Debug] Device type is unknown");
+            #[cfg(debug_assertions)] eprintln!("[SMART Debug] Device type is unknown");
             return None;
         }
         
@@ -1176,6 +1283,7 @@ fn try_diskutil_smart(disk_id: &str) -> Option<SmartData> {
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_diagnose_progress(app: &AppHandle, percent: u32, status: &str, phase: &str, 
     sectors_checked: u64, errors_found: u64, read_speed: f64, write_speed: f64) {
     let _ = app.emit("diagnose_progress", DiagnoseProgressEvent {
@@ -1186,6 +1294,7 @@ fn emit_diagnose_progress(app: &AppHandle, percent: u32, status: &str, phase: &s
         errors_found,
         read_speed_mbps: read_speed,
         write_speed_mbps: write_speed,
+        operation_id: CURRENT_OPERATION_ID.load(Ordering::SeqCst),
     });
 }
 
@@ -1215,16 +1324,13 @@ fn parse_dd_bytes_and_time(output: &str) -> Option<(u64, f64)> {
 #[tauri::command]
 async fn diagnose_surface_scan(app: AppHandle, disk_id: String, password: String) -> Result<DiagnoseResult, String> {
     CANCEL_DIAGNOSE.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     
     let device_path = format!("/dev/r{}", disk_id);
     
-    // First unmount all partitions
-    let unmount_script = format!(
-        "echo '{}' | sudo -S diskutil unmountDisk force {} 2>&1",
-        password.replace("'", "'\\''"),
-        disk_id
-    );
-    let _ = Command::new("sh").args(["-c", &unmount_script]).output();
+    // First unmount all partitions and verify (K5)
+    ensure_disk_unmounted(&app, &disk_id)?;
     
     // Get disk size
     let size_output = Command::new("diskutil").args(["info", "-plist", &disk_id]).output()
@@ -1234,7 +1340,7 @@ async fn diagnose_surface_scan(app: AppHandle, disk_id: String, password: String
         .ok_or("Failed to get disk size")?;
     
     const BLOCK_SIZE: u64 = 16 * 1024 * 1024; // 16MB blocks for better performance
-    let total_blocks = (total_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let total_blocks = total_bytes.div_ceil(BLOCK_SIZE);
     let total_sectors = total_bytes / 512;
     
     emit_diagnose_progress(&app, 0, "Starting surface scan...", "reading", 0, 0, 0.0, 0.0);
@@ -1265,13 +1371,12 @@ async fn diagnose_surface_scan(app: AppHandle, disk_id: String, password: String
             
             // Use dd to read 16MB at a time with sudo
             let dd_cmd = format!(
-                "echo '{}' | sudo -S dd if={} bs=16m skip={} count=1 2>/dev/null | wc -c",
-                password.replace("'", "'\\''"),
+                "dd if={} bs=16m skip={} count=1 2>/dev/null | wc -c",
                 device_path,
                 block
             );
             
-            let result = Command::new("sh").args(["-c", &dd_cmd]).output();
+            let result = sudo_sh(&password, &dd_cmd);
             
             match result {
                 Ok(output) => {
@@ -1328,17 +1433,14 @@ async fn diagnose_surface_scan(app: AppHandle, disk_id: String, password: String
 #[tauri::command]
 async fn diagnose_full_test(app: AppHandle, disk_id: String, password: String) -> Result<DiagnoseResult, String> {
     CANCEL_DIAGNOSE.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     
     // Use rdisk for raw device access (like speed test)
     let device_path = format!("/dev/r{}", disk_id);
     
-    // Unmount all partitions
-    let unmount_script = format!(
-        "echo '{}' | sudo -S diskutil unmountDisk force {} 2>&1",
-        password.replace("'", "'\\''"),
-        disk_id
-    );
-    let _ = Command::new("sh").args(["-c", &unmount_script]).output();
+    // Unmount all partitions and verify (K5)
+    ensure_disk_unmounted(&app, &disk_id)?;
     
     // Get disk size
     let size_output = Command::new("diskutil").args(["info", "-plist", &disk_id]).output()
@@ -1411,14 +1513,13 @@ async fn diagnose_full_test(app: AppHandle, disk_id: String, password: String) -
                 
                 // dd write command with 64MB blocks
                 let dd_cmd = format!(
-                    "echo '{}' | sudo -S dd if={} of={} bs=64m seek={} count=1 conv=notrunc 2>/dev/null",
-                    password.replace("'", "'\\''"),
+                    "dd if={} of={} bs=64m seek={} count=1 conv=notrunc 2>/dev/null",
                     temp_pattern,
                     device_path,
                     block
                 );
                 
-                if Command::new("sh").args(["-c", &dd_cmd]).output().is_ok() {
+                if sudo_sh(&password, &dd_cmd).is_ok() {
                     total_write_bytes += BLOCK_SIZE;
                 }
                 
@@ -1447,13 +1548,12 @@ async fn diagnose_full_test(app: AppHandle, disk_id: String, password: String) -
                 
                 // Read block using dd - just check first byte for speed
                 let dd_read = format!(
-                    "echo '{}' | sudo -S dd if={} bs=64m skip={} count=1 2>/dev/null | head -c 1 | xxd -p",
-                    password.replace("'", "'\\''"),
+                    "dd if={} bs=64m skip={} count=1 2>/dev/null | head -c 1 | xxd -p",
                     device_path,
                     block
                 );
                 
-                let result = Command::new("sh").args(["-c", &dd_read]).output();
+                let result = sudo_sh(&password, &dd_read);
                 
                 match result {
                     Ok(output) => {
@@ -1518,19 +1618,16 @@ async fn diagnose_full_test(app: AppHandle, disk_id: String, password: String) -
 #[tauri::command]
 async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) -> Result<DiagnoseResult, String> {
     CANCEL_DIAGNOSE.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     
     let device_path = format!("/dev/r{}", disk_id);
     
     // Show progress immediately
     emit_diagnose_progress(&app, 0, "USB-Stick wird vorbereitet...", "preparing", 0, 0, 0.0, 0.0);
     
-    // Unmount - run in background to not block
-    let unmount_script = format!(
-        "echo '{}' | sudo -S diskutil unmountDisk force {} 2>&1",
-        password.replace("'", "'\\''"),
-        disk_id
-    );
-    let _ = Command::new("sh").args(["-c", &unmount_script]).output();
+    // Unmount and verify (K5)
+    ensure_disk_unmounted(&app, &disk_id)?;
     
     emit_diagnose_progress(&app, 0, "Lese Disk-Informationen...", "preparing", 0, 0, 0.0, 0.0);
     
@@ -1555,12 +1652,12 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
     let capped_test_bytes = per_test_bytes.max(min_test_bytes).min(max_test_bytes);
     
     // Calculate block counts based on capped test size
-    let count_1m = capped_test_bytes / (1 * 1024 * 1024);    // blocks for 1MB test
+    let count_1m = capped_test_bytes / (1024 * 1024);    // blocks for 1MB test
     let count_4m = capped_test_bytes / (4 * 1024 * 1024);    // blocks for 4MB test
     let count_16m = capped_test_bytes / (16 * 1024 * 1024);  // blocks for 16MB test
     
     let block_sizes: [(u64, &str, u64); 3] = [
-        (1 * 1024 * 1024, "1m", count_1m.max(10)),     // At least 10 blocks
+        (1024 * 1024, "1m", count_1m.max(10)),     // At least 10 blocks
         (4 * 1024 * 1024, "4m", count_4m.max(5)),      // At least 5 blocks
         (16 * 1024 * 1024, "16m", count_16m.max(3)),   // At least 3 blocks
     ];
@@ -1580,8 +1677,7 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
     
     emit_diagnose_progress(&app, 0, &format!("Starte Geschwindigkeitstest ({})...", test_size_display), "starting", 0, 0, 0.0, 0.0);
     
-    // Clone password for use in blocking thread
-    let password_clone = password.clone();
+    // V6: password wird direkt in die Closure gemoved — kein clone nötig.
     let app_clone = app.clone();
     
     // Run in blocking thread
@@ -1676,15 +1772,14 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
                 
                 // Write chunk with seek to correct position
                 let dd_write = format!(
-                    "echo '{}' | sudo -S dd if=/dev/zero of={} bs={} count={} seek={} 2>&1",
-                    password_clone.replace("'", "'\\''"),
+                    "dd if=/dev/zero of={} bs={} count={} seek={} 2>&1",
                     device_path,
                     bs_str,
                     chunk_blocks,
                     offset_blocks
                 );
                 
-                let write_result = Command::new("sh").args(["-c", &dd_write]).output();
+                let write_result = sudo_sh(&password, &dd_write);
                 
                 // Parse result and accumulate
                 if let Ok(output) = &write_result {
@@ -1769,15 +1864,14 @@ async fn diagnose_speed_test(app: AppHandle, disk_id: String, password: String) 
                 
                 // Read chunk with skip to correct position
                 let dd_read = format!(
-                    "echo '{}' | sudo -S dd if={} of=/dev/null bs={} count={} skip={} 2>&1",
-                    password_clone.replace("'", "'\\''"),
+                    "dd if={} of=/dev/null bs={} count={} skip={} 2>&1",
                     device_path,
                     bs_str,
                     chunk_blocks,
                     offset_blocks
                 );
                 
-                let read_result = Command::new("sh").args(["-c", &dd_read]).output();
+                let read_result = sudo_sh(&password, &dd_read);
                 
                 // Parse result and accumulate
                 if let Ok(output) = &read_result {
@@ -1868,11 +1962,13 @@ fn list_disks() -> Result<Vec<DiskInfo>, String> {
         if line.starts_with("/dev/disk") {
             if let Some(caps) = regex_lite::Regex::new(r"/dev/(disk\d+)")
                 .ok().and_then(|re| re.captures(line)) {
-                let disk_id = caps.get(1).unwrap().as_str().to_string();
-                if !seen_disk_ids.contains(&disk_id) {
-                    if let Ok(info) = get_disk_details(&disk_id) {
-                        seen_disk_ids.insert(disk_id);
-                        disks.push(info);
+                if let Some(m) = caps.get(1) {
+                    let disk_id = m.as_str().to_string();
+                    if !seen_disk_ids.contains(&disk_id) {
+                        if let Ok(info) = get_disk_details(&disk_id) {
+                            seen_disk_ids.insert(disk_id);
+                            disks.push(info);
+                        }
                     }
                 }
             }
@@ -1888,13 +1984,15 @@ fn list_disks() -> Result<Vec<DiskInfo>, String> {
         if line.starts_with("/dev/disk") {
             if let Some(caps) = regex_lite::Regex::new(r"/dev/(disk\d+)")
                 .ok().and_then(|re| re.captures(line)) {
-                let disk_id = caps.get(1).unwrap().as_str().to_string();
-                if !seen_disk_ids.contains(&disk_id) {
-                    // Check if this is a removable media (SD card, etc.)
-                    if is_removable_media(&disk_id) {
-                        if let Ok(info) = get_disk_details(&disk_id) {
-                            seen_disk_ids.insert(disk_id);
-                            disks.push(info);
+                if let Some(m) = caps.get(1) {
+                    let disk_id = m.as_str().to_string();
+                    if !seen_disk_ids.contains(&disk_id) {
+                        // Check if this is a removable media (SD card, etc.)
+                        if is_removable_media(&disk_id) {
+                            if let Ok(info) = get_disk_details(&disk_id) {
+                                seen_disk_ids.insert(disk_id);
+                                disks.push(info);
+                            }
                         }
                     }
                 }
@@ -1906,44 +2004,43 @@ fn list_disks() -> Result<Vec<DiskInfo>, String> {
 }
 
 /// Check if a disk has removable media (like SD cards in built-in readers)
+/// V5: nutzt `diskutil info -plist` + `extract_plist_bool` statt Text-Scraping.
 fn is_removable_media(disk_id: &str) -> bool {
-    let output = Command::new("diskutil").args(["info", disk_id]).output();
+    let output = Command::new("diskutil").args(["info", "-plist", disk_id]).output();
     if let Ok(out) = output {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        for line in stdout.lines() {
-            // Check for "Removable Media: Removable" or "Removable Media: Yes"
-            if line.contains("Removable Media:") {
-                let value = line.split(':').nth(1).map(|s| s.trim().to_lowercase()).unwrap_or_default();
-                return value == "removable" || value == "yes";
-            }
+        let plist = String::from_utf8_lossy(&out.stdout);
+        // "RemovableMedia" ist der bool-Key; "Removable" existiert ebenfalls (string)
+        // und wird als Fallback geprueft, falls plist-Format aelter ist.
+        if let Some(b) = extract_plist_bool(&plist, "RemovableMedia") {
+            return b;
+        }
+        if let Some(s) = extract_plist_string(&plist, "Removable") {
+            let v = s.to_lowercase();
+            return v == "yes" || v == "removable" || v == "true";
         }
     }
     false
 }
 
 fn get_disk_details(disk_id: &str) -> Result<DiskInfo, String> {
-    let output = Command::new("diskutil").args(["info", disk_id]).output()
+    // V5: Komplett auf -plist umgestellt; vermeidet brittle Regex/Substring-Parsing
+    // der textuellen `diskutil info`-Ausgabe.
+    let output = Command::new("diskutil").args(["info", "-plist", disk_id]).output()
         .map_err(|e| format!("diskutil info Fehler: {}", e))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut name = "Unknown Device".to_string();
-    let mut size = "Unknown Size".to_string();
-    for line in stdout.lines() {
-        if line.contains("Device / Media Name:") {
-            if let Some(val) = line.split(':').nth(1) {
-                name = val.trim().to_string();
-            }
-        } else if line.contains("Disk Size:") || line.contains("Total Size:") {
-            if let Some(caps) = regex_lite::Regex::new(r"([\d.]+\s*[KMGT]?B)")
-                .ok().and_then(|re| re.captures(line)) {
-                size = caps.get(1).unwrap().as_str().to_string();
-            }
-        }
-    }
-    let plist_output = Command::new("diskutil").args(["info", "-plist", disk_id]).output().ok();
-    let bytes = plist_output.and_then(|o| {
-        let plist_str = String::from_utf8_lossy(&o.stdout);
-        extract_plist_value(&plist_str, "TotalSize").or_else(|| extract_plist_value(&plist_str, "Size"))
-    });
+    let plist = String::from_utf8_lossy(&output.stdout);
+
+    let name = extract_plist_string(&plist, "MediaName")
+        .or_else(|| extract_plist_string(&plist, "IORegistryEntryName"))
+        .or_else(|| extract_plist_string(&plist, "VolumeName"))
+        .unwrap_or_else(|| "Unknown Device".to_string());
+
+    let bytes = extract_plist_value(&plist, "TotalSize")
+        .or_else(|| extract_plist_value(&plist, "Size"));
+
+    let size = bytes
+        .map(format_size_si)
+        .unwrap_or_else(|| "Unknown Size".to_string());
+
     Ok(DiskInfo { id: disk_id.to_string(), name, size, bytes })
 }
 
@@ -1984,6 +2081,47 @@ fn extract_plist_string(plist: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// V5: Bool-Werte (`<true/>`/`<false/>`) aus einem `diskutil ... -plist`-Output
+/// extrahieren. Erlaubt robusten Ersatz fuer brittle Text-Scraping wie
+/// "Removable Media: Yes".
+fn extract_plist_bool(plist: &str, key: &str) -> Option<bool> {
+    let key_pattern = format!("<key>{}</key>", key);
+    let mut found_key = false;
+    for line in plist.lines() {
+        if found_key {
+            let trimmed = line.trim();
+            if trimmed.starts_with("<true") {
+                return Some(true);
+            } else if trimmed.starts_with("<false") {
+                return Some(false);
+            }
+            found_key = false;
+        }
+        if line.contains(&key_pattern) {
+            found_key = true;
+        }
+    }
+    None
+}
+
+/// V5: Bytes in eine zu `diskutil` aehnliche Groessenangabe formatieren
+/// (z. B. "1.0 TB", "32.0 GB", "512 MB"). Nutzt SI-Einheiten (1000), so
+/// wie sie auch in der Original-Textausgabe von `diskutil info` erscheinen.
+fn format_size_si(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[unit])
+    } else {
+        format!("{:.1} {}", value, UNITS[unit])
+    }
 }
 
 #[tauri::command]
@@ -2080,14 +2218,16 @@ fn get_volume_info(disk_id: String) -> Result<Option<VolumeInfo>, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         if let Some(caps) = regex_lite::Regex::new(r"(disk\d+s\d+)").ok().and_then(|re| re.captures(line)) {
-            let part_id = caps.get(1).unwrap().as_str();
-            // Try macOS native first
-            if let Some(info) = check_disk(part_id) {
-                return Ok(Some(info));
-            }
-            // Then try raw detection for unsupported filesystems
-            if let Some(info) = check_disk_raw(part_id) {
-                return Ok(Some(info));
+            if let Some(m) = caps.get(1) {
+                let part_id = m.as_str();
+                // Try macOS native first
+                if let Some(info) = check_disk(part_id) {
+                    return Ok(Some(info));
+                }
+                // Then try raw detection for unsupported filesystems
+                if let Some(info) = check_disk_raw(part_id) {
+                    return Ok(Some(info));
+                }
             }
         }
     }
@@ -2131,6 +2271,8 @@ async fn repair_disk(
     password: String,
 ) -> Result<String, String> {
     CANCEL_TOOLS.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     
     let disk_path = format!("/dev/{}", disk_id);
     
@@ -2193,7 +2335,8 @@ async fn repair_disk(
             .args(["unmount", &partition_path])
             .output();
         
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // V1: tokio::time::sleep im async-Kontext, blockiert keinen Tokio-Worker
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         
         // Use repairVolume for partitions, repairDisk for whole disk
         let repair_cmd = if partition.contains('s') {
@@ -2257,6 +2400,7 @@ async fn repair_disk(
 
 /// Format a USB disk with the specified filesystem
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn format_disk(
     app: AppHandle,
     disk_id: String,
@@ -2268,6 +2412,8 @@ async fn format_disk(
     encryption_password: Option<String>,
 ) -> Result<String, String> {
     CANCEL_TOOLS.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     
     let disk_path = format!("/dev/{}", disk_id);
     let is_encrypted = encrypted.unwrap_or(false);
@@ -2310,8 +2456,8 @@ async fn format_disk(
         .args(["unmountDisk", "force", &disk_path])
         .output();
     
-    // Small delay to allow system to release device
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Small delay to allow system to release device (V1: tokio::time::sleep)
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     
     // Build the format command
     // NTFS requires Paragon NTFS driver and uses eraseVolume with UFSD_NTFS
@@ -2430,6 +2576,7 @@ async fn format_disk(
 }
 
 /// Write a pass using dd with progress tracking
+#[allow(clippy::too_many_arguments)]
 fn write_pass(
     app: &AppHandle,
     disk_path: &str,
@@ -2548,6 +2695,8 @@ async fn secure_erase(
     password: String,
 ) -> Result<String, String> {
     CANCEL_TOOLS.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     
     let disk_path = format!("/dev/r{}", disk_id); // Use raw device for faster writes
     
@@ -2566,12 +2715,10 @@ async fn secure_erase(
     // Get disk size
     let disk_size = get_disk_size(&disk_id)?;
     
-    // Force unmount
-    let _ = Command::new("diskutil")
-        .args(["unmountDisk", "force", &format!("/dev/{}", disk_id)])
-        .output();
+    // Force unmount and verify (K5) — critical before destructive write
+    ensure_disk_unmounted(&app, &disk_id)?;
     
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     
     emit_progress(&app, 5, &format!("Starting {} erase...", level_desc), "tools");
     
@@ -2639,15 +2786,8 @@ async fn secure_erase(
 /// Forensic analysis - gather all available information about a USB device
 #[tauri::command]
 async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_json::Value, String> {
-    let escaped_password = password.replace("'", "'\\''");
-    
     // 0. Validate password first with a simple sudo command
-    let password_check_cmd = format!(
-        "echo '{}' | sudo -S -v 2>&1",
-        escaped_password
-    );
-    
-    if let Ok(output) = Command::new("sh").args(["-c", &password_check_cmd]).output() {
+    if let Ok(output) = sudo_sh(&password, "true") {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}{}", stdout, stderr);
@@ -2686,12 +2826,9 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     });
     
     // 1. Get basic disk info from diskutil
-    let diskutil_cmd = format!(
-        "echo '{}' | sudo -S diskutil info {} 2>/dev/null",
-        escaped_password, disk_id
-    );
+    let diskutil_cmd = format!("diskutil info {} 2>/dev/null", disk_id);
     
-    if let Ok(output) = Command::new("sh").args(["-c", &diskutil_cmd]).output() {
+    if let Ok(output) = sudo_sh(&password, &diskutil_cmd) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut disk_info = serde_json::Map::new();
         
@@ -2747,12 +2884,9 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
         
         for suffix in 1..=10 {  // Check up to 10 partitions
             let partition_id = format!("{}s{}", disk_id, suffix);
-            let partition_cmd = format!(
-                "echo '{}' | sudo -S diskutil info {} 2>/dev/null",
-                escaped_password, partition_id
-            );
+            let partition_cmd = format!("diskutil info {} 2>/dev/null", partition_id);
             
-            if let Ok(part_output) = Command::new("sh").args(["-c", &partition_cmd]).output() {
+            if let Ok(part_output) = sudo_sh(&password, &partition_cmd) {
                 let part_stdout = String::from_utf8_lossy(&part_output.stdout);
                 
                 // Check if partition exists (output should contain device identifier)
@@ -2980,53 +3114,59 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
                         .unwrap_or(false);
                 
                 // Debug: Log what we detected for Linux FS
-                let content_type_str = part_info.get("content_type").and_then(|c| c.as_str()).unwrap_or("none");
-                let partition_type_str = part_info.get("partition_type").and_then(|p| p.as_str()).unwrap_or("none");
-                let filesystem_str = part_info.get("filesystem").and_then(|f| f.as_str()).unwrap_or("none");
-                eprintln!("[ext4 Debug] Partition {}: is_linux_fs={}, content_type={}, partition_type={}, filesystem={}", 
-                    partition_id, is_linux_fs, content_type_str, partition_type_str, filesystem_str);
+                #[cfg(debug_assertions)] {
+                    let content_type_str = part_info.get("content_type").and_then(|c| c.as_str()).unwrap_or("none");
+                    let partition_type_str = part_info.get("partition_type").and_then(|p| p.as_str()).unwrap_or("none");
+                    let filesystem_str = part_info.get("filesystem").and_then(|f| f.as_str()).unwrap_or("none");
+                    eprintln!("[ext4 Debug] Partition {}: is_linux_fs={}, content_type={}, partition_type={}, filesystem={}",
+                        partition_id, is_linux_fs, content_type_str, partition_type_str, filesystem_str);
+                }
                 
                 if is_linux_fs && !part_info.contains_key("volume_name") {
-                    eprintln!("[ext4 Debug] Trying to read ext4 label for {}", partition_id);
+                    #[cfg(debug_assertions)] eprintln!("[ext4 Debug] Trying to read ext4 label for {}", partition_id);
                     
                     // Try e2label first (simpler output) - needs sudo for raw disk access
                     let e2label_cmd = format!(
-                        "echo '{}' | sudo -S /opt/homebrew/opt/e2fsprogs/sbin/e2label /dev/{} 2>/dev/null || echo '{}' | sudo -S /usr/local/opt/e2fsprogs/sbin/e2label /dev/{} 2>/dev/null",
-                        escaped_password, partition_id, escaped_password, partition_id
+                        "/opt/homebrew/opt/e2fsprogs/sbin/e2label /dev/{} 2>/dev/null || /usr/local/opt/e2fsprogs/sbin/e2label /dev/{} 2>/dev/null",
+                        partition_id, partition_id
                     );
-                    eprintln!("[ext4 Debug] Running e2label with sudo for {}", partition_id);
+                    #[cfg(debug_assertions)] eprintln!("[ext4 Debug] Running e2label with sudo for {}", partition_id);
                     
-                    if let Ok(label_output) = Command::new("sh").args(["-c", &e2label_cmd]).output() {
+                    if let Ok(label_output) = sudo_sh(&password, &e2label_cmd) {
                         let stdout = String::from_utf8_lossy(&label_output.stdout).trim().to_string();
-                        let stderr = String::from_utf8_lossy(&label_output.stderr).trim().to_string();
-                        eprintln!("[ext4 Debug] e2label stdout: '{}', stderr: '{}'", stdout, stderr);
+                        #[cfg(debug_assertions)] {
+                            let stderr = String::from_utf8_lossy(&label_output.stderr).trim().to_string();
+                            eprintln!("[ext4 Debug] e2label stdout: '{}', stderr: '{}'", stdout, stderr);
+                        }
                         
                         // Check if it's a valid label (not an error message)
                         if !stdout.is_empty() && !stdout.contains("Permission denied") && !stdout.contains("Bad magic") && !stdout.contains("No such file") && !stdout.contains("Password:") {
                             part_info.insert("volume_name".to_string(), serde_json::json!(stdout));
-                            eprintln!("[ext4 Debug] Set volume_name to: {}", stdout);
+                            #[cfg(debug_assertions)] eprintln!("[ext4 Debug] Set volume_name to: {}", stdout);
                         }
                     }
                     
                     // If e2label didn't work, try tune2fs
                     if !part_info.contains_key("volume_name") {
-                        eprintln!("[ext4 Debug] e2label didn't work, trying tune2fs");
+                        #[cfg(debug_assertions)] eprintln!("[ext4 Debug] e2label didn't work, trying tune2fs");
                         let tune2fs_cmd = format!(
-                            "echo '{}' | sudo -S /opt/homebrew/opt/e2fsprogs/sbin/tune2fs -l /dev/{} 2>/dev/null | grep 'Filesystem volume name' || echo '{}' | sudo -S /usr/local/opt/e2fsprogs/sbin/tune2fs -l /dev/{} 2>/dev/null | grep 'Filesystem volume name'",
-                            escaped_password, partition_id, escaped_password, partition_id
+                            "/opt/homebrew/opt/e2fsprogs/sbin/tune2fs -l /dev/{} 2>/dev/null | grep 'Filesystem volume name' || /usr/local/opt/e2fsprogs/sbin/tune2fs -l /dev/{} 2>/dev/null | grep 'Filesystem volume name'",
+                            partition_id, partition_id
                         );
-                        eprintln!("[ext4 Debug] Running tune2fs with sudo for {}", partition_id);
+                        #[cfg(debug_assertions)] eprintln!("[ext4 Debug] Running tune2fs with sudo for {}", partition_id);
                         
-                        if let Ok(tune_output) = Command::new("sh").args(["-c", &tune2fs_cmd]).output() {
+                        if let Ok(tune_output) = sudo_sh(&password, &tune2fs_cmd) {
                             let tune_stdout = String::from_utf8_lossy(&tune_output.stdout);
-                            let tune_stderr = String::from_utf8_lossy(&tune_output.stderr);
-                            eprintln!("[ext4 Debug] tune2fs stdout: '{}', stderr: '{}'", tune_stdout.trim(), tune_stderr.trim());
+                            #[cfg(debug_assertions)] {
+                                let tune_stderr = String::from_utf8_lossy(&tune_output.stderr);
+                                eprintln!("[ext4 Debug] tune2fs stdout: '{}', stderr: '{}'", tune_stdout.trim(), tune_stderr.trim());
+                            }
                             
                             // Parse "Filesystem volume name:   <volume_label>"
                             if let Some(line) = tune_stdout.lines().find(|l| l.contains("Filesystem volume name")) {
                                 if let Some(label) = line.split(':').nth(1) {
                                     let label = label.trim();
-                                    eprintln!("[ext4 Debug] Parsed label: '{}'", label);
+                                    #[cfg(debug_assertions)] eprintln!("[ext4 Debug] Parsed label: '{}'", label);
                                     if !label.is_empty() && label != "<none>" {
                                         part_info.insert("volume_name".to_string(), serde_json::json!(label));
                                     }
@@ -3037,7 +3177,7 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
                     
                     // If still no volume name and partition is mounted, use mount point name
                     if !part_info.contains_key("volume_name") {
-                        eprintln!("[ext4 Debug] No volume_name found, checking mount point");
+                        #[cfg(debug_assertions)] eprintln!("[ext4 Debug] No volume_name found, checking mount point");
                         let mount_point_name = part_info.get("mount_point")
                             .and_then(|m| m.as_str())
                             .and_then(|mp| mp.rsplit('/').next())
@@ -3045,7 +3185,7 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
                             .map(|s| s.to_string());
                         
                         if let Some(name) = mount_point_name {
-                            eprintln!("[ext4 Debug] Using mount point name: {}", name);
+                            #[cfg(debug_assertions)] eprintln!("[ext4 Debug] Using mount point name: {}", name);
                             part_info.insert("volume_name".to_string(), serde_json::json!(name));
                         }
                     }
@@ -3104,12 +3244,9 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     }
     
     // 2. Get partition layout
-    let partitions_cmd = format!(
-        "echo '{}' | sudo -S diskutil list {} 2>/dev/null",
-        escaped_password, disk_id
-    );
+    let partitions_cmd = format!("diskutil list {} 2>/dev/null", disk_id);
     
-    if let Ok(output) = Command::new("sh").args(["-c", &partitions_cmd]).output() {
+    if let Ok(output) = sudo_sh(&password, &partitions_cmd) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         result["partition_layout"] = serde_json::json!(stdout.trim());
     }
@@ -3197,11 +3334,11 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     }
     
     // 4. Analyze boot capability
-    let boot_info = analyze_boot_structure(&disk_id, &escaped_password);
+    let boot_info = analyze_boot_structure(&disk_id, &password);
     result["boot_info"] = boot_info;
     
     // 5. Detect filesystem signatures from raw device
-    if let Some(fs_info) = detect_filesystem_signatures(&disk_id, &escaped_password) {
+    if let Some(fs_info) = detect_filesystem_signatures(&disk_id, &password) {
         result["filesystem_signatures"] = fs_info;
     }
     
@@ -3218,7 +3355,7 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     }
     
     // 7. Check for hidden files and special structures
-    if let Some(special_info) = detect_special_structures(&disk_id, &escaped_password) {
+    if let Some(special_info) = detect_special_structures(&disk_id, &password) {
         result["special_structures"] = special_info;
     }
     
@@ -3338,7 +3475,7 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
         let parts: Vec<&str> = stdout.split_whitespace().collect();
         if parts.len() >= 3 {
             let mut iostat_info = serde_json::Map::new();
-            iostat_info.insert("kb_per_transfer".to_string(), serde_json::json!(parts.get(0).unwrap_or(&"N/A")));
+            iostat_info.insert("kb_per_transfer".to_string(), serde_json::json!(parts.first().unwrap_or(&"N/A")));
             iostat_info.insert("transfers_per_sec".to_string(), serde_json::json!(parts.get(1).unwrap_or(&"N/A")));
             iostat_info.insert("mb_per_sec".to_string(), serde_json::json!(parts.get(2).unwrap_or(&"N/A")));
             result["disk_activity"] = serde_json::json!(iostat_info);
@@ -3347,10 +3484,10 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     
     // 12. Get raw hex dump of first sectors (MBR/GPT header preview)
     let hexdump_cmd = format!(
-        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=2 2>/dev/null | xxd -l 128 -c 16",
-        escaped_password, disk_id
+        "dd if=/dev/r{} bs=512 count=2 2>/dev/null | xxd -l 128 -c 16",
+        disk_id
     );
-    if let Ok(output) = Command::new("sh").args(["-c", &hexdump_cmd]).output() {
+    if let Ok(output) = sudo_sh(&password, &hexdump_cmd) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if !stdout.is_empty() {
             result["raw_header_hex"] = serde_json::json!(stdout.trim());
@@ -3359,10 +3496,10 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     
     // 13. Parse MBR partition table entries
     let mbr_cmd = format!(
-        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=1 2>/dev/null | xxd -p -l 512",
-        escaped_password, disk_id
+        "dd if=/dev/r{} bs=512 count=1 2>/dev/null | xxd -p -l 512",
+        disk_id
     );
-    if let Ok(output) = Command::new("sh").args(["-c", &mbr_cmd]).output() {
+    if let Ok(output) = sudo_sh(&password, &mbr_cmd) {
         let hex_str = String::from_utf8_lossy(&output.stdout).replace("\n", "");
         if hex_str.len() >= 1024 {
             let mut mbr_info = serde_json::Map::new();
@@ -3419,10 +3556,10 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
     
     // 14. Get GPT header details
     let gpt_cmd = format!(
-        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 skip=1 count=1 2>/dev/null | xxd -p -l 512",
-        escaped_password, disk_id
+        "dd if=/dev/r{} bs=512 skip=1 count=1 2>/dev/null | xxd -p -l 512",
+        disk_id
     );
-    if let Ok(output) = Command::new("sh").args(["-c", &gpt_cmd]).output() {
+    if let Ok(output) = sudo_sh(&password, &gpt_cmd) {
         let hex_str = String::from_utf8_lossy(&output.stdout).replace("\n", "");
         // Check for "EFI PART" signature (45 46 49 20 50 41 52 54)
         if hex_str.starts_with("4546492050415254") {
@@ -3585,11 +3722,11 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
             disk_id.to_string()
         });
     
-    eprintln!("[SMART Debug] forensic_analysis: disk_id={}, smart_disk_id={}", disk_id, smart_disk_id);
+    #[cfg(debug_assertions)] eprintln!("[SMART Debug] forensic_analysis: disk_id={}, smart_disk_id={}", disk_id, smart_disk_id);
     
     // Use try_smartctl for comprehensive SMART data (includes -x extended info)
     if let Some(smart_data) = try_smartctl(&smart_disk_id) {
-        eprintln!("[SMART Debug] try_smartctl returned data, available={}", smart_data.available);
+        #[cfg(debug_assertions)] eprintln!("[SMART Debug] try_smartctl returned data, available={}", smart_data.available);
         
         let mut smart_info = serde_json::Map::new();
         
@@ -3693,15 +3830,15 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
         
         result["smart_info"] = serde_json::json!(smart_info);
     } else {
-        eprintln!("[SMART Debug] try_smartctl returned None - SMART not available for {}", smart_disk_id);
+        #[cfg(debug_assertions)] eprintln!("[SMART Debug] try_smartctl returned None - SMART not available for {}", smart_disk_id);
     }
     
     // 17. Calculate checksums of first sector
     let checksum_cmd = format!(
-        "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=1 2>/dev/null | md5",
-        escaped_password, disk_id
+        "dd if=/dev/r{} bs=512 count=1 2>/dev/null | md5",
+        disk_id
     );
-    if let Ok(output) = Command::new("sh").args(["-c", &checksum_cmd]).output() {
+    if let Ok(output) = sudo_sh(&password, &checksum_cmd) {
         let md5 = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !md5.is_empty() {
             let mut checksums = serde_json::Map::new();
@@ -3709,10 +3846,10 @@ async fn forensic_analysis(disk_id: String, password: String) -> Result<serde_js
             
             // Also get SHA256
             let sha_cmd = format!(
-                "echo '{}' | sudo -S dd if=/dev/r{} bs=512 count=1 2>/dev/null | shasum -a 256",
-                escaped_password, disk_id
+                "dd if=/dev/r{} bs=512 count=1 2>/dev/null | shasum -a 256",
+                disk_id
             );
-            if let Ok(sha_out) = Command::new("sh").args(["-c", &sha_cmd]).output() {
+            if let Ok(sha_out) = sudo_sh(&password, &sha_cmd) {
                 let sha = String::from_utf8_lossy(&sha_out.stdout);
                 if let Some(hash) = sha.split_whitespace().next() {
                     checksums.insert("mbr_sha256".to_string(), serde_json::json!(hash));
@@ -4115,13 +4252,13 @@ except Exception as e:
     sys.exit(1)
 "#, device_path);
 
-    let cmd = format!(
-        "echo '{}' | sudo -S python3 -c '{}'",
-        password,
-        python_script.replace("'", "'\"'\"'")
-    );
+    // K3: write script to a temp file and execute under sudo (avoids
+    // embedding the password into a shell pipeline).
+    let tmp_script = std::env::temp_dir().join(format!("burniso_boot_{}.py", std::process::id()));
+    let _ = std::fs::write(&tmp_script, &python_script);
+    let cmd = format!("python3 {} ; rm -f {}", tmp_script.display(), tmp_script.display());
     
-    if let Ok(output) = Command::new("sh").args(["-c", &cmd]).output() {
+    if let Ok(output) = sudo_sh(password, &cmd) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         
         for line in stdout.lines() {
@@ -4146,16 +4283,15 @@ except Exception as e:
 /// Detect filesystem signatures from raw device and its partitions
 fn detect_filesystem_signatures(disk_id: &str, password: &str) -> Option<serde_json::Value> {
     let mut all_detected = Vec::new();
-    let escaped_password = password.replace("'", "'\\''");
     
     // FIRST: Check the WHOLE DISK for ISO 9660 filesystem (hybrid ISO images write directly to disk)
     // ISO 9660 "CD001" signature is at offset 0x8001 (32769 bytes)
     // Note: Use /dev/diskX (not /dev/rdiskX) because raw device doesn't support seek properly
     let iso_check_cmd = format!(
-        "echo '{}' | sudo -S dd if=/dev/{} bs=1 skip=32769 count=5 2>/dev/null | cat",
-        escaped_password, disk_id
+        "dd if=/dev/{} bs=1 skip=32769 count=5 2>/dev/null | cat",
+        disk_id
     );
-    if let Ok(output) = Command::new("sh").args(["-c", &iso_check_cmd]).output() {
+    if let Ok(output) = sudo_sh(password, &iso_check_cmd) {
         let data = output.stdout;
         if data.len() >= 5 && &data[0..5] == b"CD001" {
             // Found ISO 9660! Now extract volume label and size
@@ -4164,10 +4300,10 @@ fn detect_filesystem_signatures(disk_id: &str, password: &str) -> Option<serde_j
             
             // Extract volume label (at offset 32808 = 0x8028, 32 bytes)
             let label_cmd = format!(
-                "echo '{}' | sudo -S dd if=/dev/{} bs=1 skip=32808 count=32 2>/dev/null | tr -d '\\0' | xargs",
-                escaped_password, disk_id
+                "dd if=/dev/{} bs=1 skip=32808 count=32 2>/dev/null | tr -d '\\0' | xargs",
+                disk_id
             );
-            if let Ok(label_output) = Command::new("sh").args(["-c", &label_cmd]).output() {
+            if let Ok(label_output) = sudo_sh(password, &label_cmd) {
                 let label = String::from_utf8_lossy(&label_output.stdout).trim().to_string();
                 if !label.is_empty() {
                     iso_info.insert("label".to_string(), serde_json::json!(label));
@@ -4176,10 +4312,10 @@ fn detect_filesystem_signatures(disk_id: &str, password: &str) -> Option<serde_j
             
             // Extract volume size using Python to read the 4-byte little-endian value at offset 32848
             let size_cmd = format!(
-                "echo '{}' | sudo -S python3 -c \"import os; f=os.open('/dev/{}', os.O_RDONLY); os.lseek(f, 32848, 0); d=os.read(f, 4); os.close(f); print(int.from_bytes(d, 'little') * 2048)\" 2>/dev/null",
-                escaped_password, disk_id
+                "python3 -c 'import os; f=os.open(\"/dev/{}\", os.O_RDONLY); os.lseek(f, 32848, 0); d=os.read(f, 4); os.close(f); print(int.from_bytes(d, \"little\") * 2048)' 2>/dev/null",
+                disk_id
             );
-            if let Ok(size_output) = Command::new("sh").args(["-c", &size_cmd]).output() {
+            if let Ok(size_output) = sudo_sh(password, &size_cmd) {
                 let size_str = String::from_utf8_lossy(&size_output.stdout).trim().to_string();
                 if let Ok(iso_size) = size_str.parse::<u64>() {
                     if iso_size > 0 {
@@ -4389,13 +4525,12 @@ except Exception as e:
     print(f"ERROR:{{e}}", file=sys.stderr)
 "#, device_path);
 
-        let cmd = format!(
-            "echo '{}' | sudo -S python3 -c '{}'",
-            escaped_password,
-            python_script.replace("'", "'\"'\"'")
-        );
+        // K3: write script to a temp file and execute under sudo
+        let tmp_script = std::env::temp_dir().join(format!("burniso_fs_{}_{}.py", std::process::id(), part_id));
+        let _ = std::fs::write(&tmp_script, &python_script);
+        let cmd = format!("python3 {} ; rm -f {}", tmp_script.display(), tmp_script.display());
         
-        if let Ok(output) = Command::new("sh").args(["-c", &cmd]).output() {
+        if let Ok(output) = sudo_sh(password, &cmd) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let _stderr = String::from_utf8_lossy(&output.stderr);
             
@@ -4788,11 +4923,11 @@ fn detect_special_structures(disk_id: &str, password: &str) -> Option<serde_json
     
     // Check for hidden partitions using diskutil
     let hidden_cmd = format!(
-        "echo '{}' | sudo -S diskutil list {} 2>/dev/null | grep -i 'EFI\\|Recovery\\|hidden\\|Microsoft Reserved'",
-        password, disk_id
+        "diskutil list {} 2>/dev/null | grep -i 'EFI\\|Recovery\\|hidden\\|Microsoft Reserved'",
+        disk_id
     );
     
-    if let Ok(output) = Command::new("sh").args(["-c", &hidden_cmd]).output() {
+    if let Ok(output) = sudo_sh(password, &hidden_cmd) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if !stdout.trim().is_empty() {
             let partitions: Vec<&str> = stdout.lines().map(|l| l.trim()).collect();
@@ -4801,9 +4936,7 @@ fn detect_special_structures(disk_id: &str, password: &str) -> Option<serde_json
     }
     
     // Check for Windows recovery
-    let check_windows_re = format!(
-        "ls -la /Volumes/*/Recovery 2>/dev/null | head -1",
-    );
+    let check_windows_re = "ls -la /Volumes/*/Recovery 2>/dev/null | head -1".to_string();
     if let Ok(output) = Command::new("sh").args(["-c", &check_windows_re]).output() {
         if !output.stdout.is_empty() {
             special.insert("has_windows_recovery".to_string(), serde_json::json!(true));
@@ -4882,16 +5015,13 @@ except Exception as e:
     sys.exit(1)
 "#, disk_path);
 
-    let escaped_password = password.replace("'", "'\\''");
-    let cmd = format!(
-        "echo '{}' | sudo -S python3 -c '{}'",
-        escaped_password,
-        python_script.replace("'", "'\"'\"'")
-    );
+    // K3: write script to a temp file and execute under sudo
+    let tmp_script = std::env::temp_dir().join(format!("burniso_bootcheck_{}.py", std::process::id()));
+    std::fs::write(&tmp_script, &python_script)
+        .map_err(|e| format!("Fehler beim Schreiben des Skripts: {}", e))?;
+    let cmd = format!("python3 {} ; rm -f {}", tmp_script.display(), tmp_script.display());
     
-    let output = Command::new("sh")
-        .args(["-c", &cmd])
-        .output()
+    let output = sudo_sh(&password, &cmd)
         .map_err(|e| format!("Fehler beim Ausführen: {}", e))?;
     
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -5005,12 +5135,15 @@ fn emit_progress(app: &AppHandle, percent: u32, status: &str, operation: &str) {
         percent,
         status: status.to_string(),
         operation: operation.to_string(),
+        operation_id: CURRENT_OPERATION_ID.load(Ordering::SeqCst),
     });
 }
 
 #[tauri::command]
 async fn burn_iso(app: AppHandle, iso_path: String, disk_id: String, password: String, verify: bool, eject: bool) -> Result<String, String> {
     CANCEL_BURN.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     let iso_size = std::fs::metadata(&iso_path).map_err(|e| format!("ISO nicht gefunden: {}", e))?.len();
     
     let _ = app.emit("burn_phase", "writing");
@@ -5020,7 +5153,7 @@ async fn burn_iso(app: AppHandle, iso_path: String, disk_id: String, password: S
     let rdisk_path = format!("/dev/r{}", disk_id);
     
     emit_progress(&app, 0, "Unmount Disk...", "burn");
-    let _ = Command::new("diskutil").args(["unmountDisk", &disk_path]).output();
+    ensure_disk_unmounted(&app, &disk_id)?;
     
     emit_progress(&app, 0, "Schreibe ISO auf USB...", "burn");
     
@@ -5088,13 +5221,14 @@ print("WRITE_SUCCESS", flush=True)"#, iso_path.replace('"', r#"\""#), rdisk_path
         
         // Wichtig: Cache leeren und Disk neu einbinden für zuverlässige Verifizierung
         let _ = Command::new("sync").output();
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         
         // Disk kurz einhängen und wieder aushängen, um gepufferte Daten zu schreiben
-        let _ = Command::new("diskutil").args(["mountDisk", &disk_path]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let _ = Command::new("diskutil").args(["unmountDisk", &disk_path]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // (W4: Timeout 30s, damit ein hängender diskutil-Daemon den Verify nicht blockiert)
+        let _ = run_with_timeout("diskutil", &["mountDisk", &disk_path], 30);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = run_with_timeout("diskutil", &["unmountDisk", &disk_path], 30);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         
         emit_progress(&app, 0, "VERIFIZIEREN: 0%", "burn");
         
@@ -5197,10 +5331,12 @@ else:
 #[tauri::command]
 async fn backup_usb_raw(app: AppHandle, disk_id: String, destination: String, disk_size: u64, password: String) -> Result<String, String> {
     CANCEL_BACKUP.store(false, Ordering::SeqCst);
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     let disk_path = format!("/dev/{}", disk_id);
     let rdisk_path = format!("/dev/r{}", disk_id);
     emit_progress(&app, 0, "Unmount Disk...", "backup");
-    let _ = Command::new("diskutil").args(["unmountDisk", &disk_path]).output();
+    ensure_disk_unmounted(&app, &disk_id)?;
     
     // Try to detect actual ISO size using root privileges
     emit_progress(&app, 0, "Prüfe ISO-Größe...", "backup");
@@ -5281,6 +5417,8 @@ print("SUCCESS", flush=True)"#, rdisk_path, destination.replace('"', r#"\""#), a
 
 #[tauri::command]
 async fn backup_usb_filesystem(app: AppHandle, mount_point: String, destination: String, volume_name: String) -> Result<String, String> {
+    let _op_id = start_operation();
+    let _ = app.emit("operation_start", _op_id);
     CANCEL_BACKUP.store(false, Ordering::SeqCst);
     emit_progress(&app, 0, "Erstelle komprimiertes Image...", "backup");
     
@@ -5345,8 +5483,8 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
     
     let about_metadata = AboutMetadata {
         name: Some("BurnISO to USB".to_string()),
-        version: Some("1.3.1".to_string()),
-        copyright: Some("© 2025 Norbert Jander".to_string()),
+        version: Some("1.4.0".to_string()),
+        copyright: Some("© 2026 Norbert Jander".to_string()),
         comments: Some(about_comments.to_string()),
         ..Default::default()
     };
@@ -5384,7 +5522,7 @@ fn build_menu(app_handle: &AppHandle, lang: &str) -> Result<(), Box<dyn std::err
     let tab_backup = MenuItem::with_id(app_handle, "tab_backup", "USB → ISO", true, Some("CmdOrCtrl+2"))?;
     let tab_diagnose_label = if lang == "en" { "USB Diagnostic" } else { "USB Diagnose" };
     let tab_diagnose = MenuItem::with_id(app_handle, "tab_diagnose", tab_diagnose_label, true, Some("CmdOrCtrl+3"))?;
-    let tab_tools_label = if lang == "en" { "USB Tools" } else { "USB Tools" };
+    let tab_tools_label = "USB Tools";
     let tab_tools = MenuItem::with_id(app_handle, "tab_tools", tab_tools_label, true, Some("CmdOrCtrl+4"))?;
     let tab_forensic_label = if lang == "en" { "Forensic Analysis" } else { "Forensik-Analyse" };
     let tab_forensic = MenuItem::with_id(app_handle, "tab_forensic", tab_forensic_label, true, Some("CmdOrCtrl+5"))?;

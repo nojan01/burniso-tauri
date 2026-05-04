@@ -479,5 +479,37 @@
     "copyToClipboard": "In Zwischenablage kopieren",
     "dismiss": "Ausblenden",
     "copied": "Kopiert!"
+  },
+  "errors": {
+    "invalidIsoExtension": "Ungültige Dateiendung. Erlaubt sind .iso oder .img.",
+    "invalidIsoPath": "Ungültiger ISO-Pfad.",
+    "invalidBackupPath": "Ungültiger Backup-Pfad.",
+    "invalidBackupExtension": "Ungültige Dateiendung für Backup. Erlaubt sind .img, .iso oder .dmg."
+  },
+  "logs": {
+    "isoSelected": "ISO ausgewählt: ",
+    "isoDropped": "✓ ISO-Datei abgelegt: ",
+    "isoDropInvalid": "⚠ Nur .iso und .img Dateien werden unterstützt",
+    "selectionError": "Auswahlfehler: ",
+    "usbSelected": "USB ausgewählt: ",
+    "burnCancelled": "Brennen abgebrochen",
+    "burnCancelledMark": "✗ Brennen abgebrochen",
+    "passwordCancelled": "Passwortabfrage abgebrochen",
+    "burnStarting": "Starte Brennvorgang …",
+    "verifyEnabled": "Verifizierung nach dem Brennen aktiviert",
+    "verifyStarting": "Starte Verifizierung …",
+    "errorPrefix": "Fehler: ",
+    "cancelling": "Abbrechen …",
+    "cancelError": "Abbruch-Fehler: ",
+    "destinationSelected": "Ziel: ",
+    "backupStarting": "Starte Backup (",
+    "backupModeFs": "Dateisystem",
+    "backupModeRaw": "Raw",
+    "isoImageDetected": "ISO-Image erkannt: Es werden nur ",
+    "isoImageDetectedMid": " gesichert (statt ",
+    "isoImageDetectedEnd": ")",
+    "backupCancelled": "✗ Backup abgebrochen",
+    "appReady": "BurnISO to USB bereit",
+    "backupReady": "USB-Backup bereit"
   }
 }
